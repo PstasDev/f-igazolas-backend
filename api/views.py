@@ -1,6 +1,8 @@
 from ninja import NinjaAPI
 from django.contrib.auth import authenticate
+from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404
+from django.db import transaction
 from typing import List
 
 from .models import Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas
@@ -10,7 +12,8 @@ from .schemas import (
     IgazolasTipusSchema, IgazolasSchema, IgazolasCreateRequest,
     OsztalySimpleSchema, QuickActionRequest, BulkQuickActionRequest,
     QuickActionResponse, BulkQuickActionResponse, TeacherCommentUpdateRequest,
-    TeacherCommentUpdateResponse
+    TeacherCommentUpdateResponse, DiakjaSignleSchema, DiakjaCreateRequest, 
+    DiakjaCreateResponse
 )
 from .jwt_utils import generate_jwt_token, decode_jwt_token
 from .authentication import JWTAuth
@@ -24,6 +27,17 @@ api = NinjaAPI(
 
 # Initialize JWT authentication
 jwt_auth = JWTAuth()
+
+
+# Helper functions
+def is_class_teacher(user: User) -> bool:
+    """Check if user is a class teacher (osztályfőnök)"""
+    return Osztaly.objects.filter(osztalyfonokok=user).exists()
+
+
+def get_teacher_class(user: User) -> Osztaly:
+    """Get the class for which the user is a teacher"""
+    return Osztaly.objects.filter(osztalyfonokok=user).first()
 
 
 # Authentication Endpoints
@@ -605,3 +619,145 @@ def update_teacher_comment(request, igazolas_id: int, data: TeacherCommentUpdate
     }
 
 
+# Diakjaim Endpoints (Ofő only)
+
+@api.get("/diakjaim", response={200: List[DiakjaSignleSchema], 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Diakjaim"])
+def get_diakjaim(request):
+    """
+    Get students from the teacher's class with their igazolások records.
+    
+    Requires authentication. Only class teachers (ofő) can access this endpoint.
+    """
+    # Check if user is a class teacher
+    if not is_class_teacher(request.auth):
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only class teachers (ofő) can access this endpoint'
+        }
+    
+    # Get the teacher's class
+    teacher_class = get_teacher_class(request.auth)
+    if not teacher_class:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'No class found for this teacher'
+        }
+    
+    # Get all students in the class
+    students = teacher_class.tanulok.all()
+    result = []
+    
+    for student in students:
+        # Get student's profile and igazolások
+        try:
+            profile = Profile.objects.get(user=student)
+            igazolasok = Igazolas.objects.filter(profile=profile).select_related('tipus').order_by('-rogzites_datuma')
+        except Profile.DoesNotExist:
+            # Create profile if it doesn't exist
+            profile = Profile.objects.create(user=student)
+            igazolasok = Igazolas.objects.none()
+        
+        # Build igazolások list
+        igazolasok_data = []
+        for igazolas in igazolasok:
+            igazolasok_data.append({
+                'id': igazolas.id,
+                'eleje': igazolas.eleje,
+                'vege': igazolas.vege,
+                'tipus': {
+                    'id': igazolas.tipus.id,
+                    'nev': igazolas.tipus.nev,
+                    'leiras': igazolas.tipus.leiras,
+                    'beleszamit': igazolas.tipus.beleszamit,
+                    'iskolaerdeku': igazolas.tipus.iskolaerdeku
+                },
+                'allapot': igazolas.allapot,
+                'rogzites_datuma': igazolas.rogzites_datuma,
+                'megjegyzes_diak': igazolas.megjegyzes_diak
+            })
+        
+        student_data = {
+            'id': student.id,
+            'username': student.username,
+            'first_name': student.first_name,
+            'last_name': student.last_name,
+            'email': student.email,
+            'igazolasok': igazolasok_data
+        }
+        result.append(student_data)
+    
+    return 200, result
+
+
+@api.post("/diakjaim", response={201: DiakjaCreateResponse, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Diakjaim"])
+def create_diakjaim(request, data: List[DiakjaCreateRequest]):
+    """
+    Create multiple students and assign them to the teacher's class.
+    
+    Requires authentication. Only class teachers (ofő) can access this endpoint.
+    Expects a list of users with last_name, first_name, and email.
+    """
+    # Check if user is a class teacher
+    if not is_class_teacher(request.auth):
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only class teachers (ofő) can access this endpoint'
+        }
+    
+    # Get the teacher's class
+    teacher_class = get_teacher_class(request.auth)
+    if not teacher_class:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'No class found for this teacher'
+        }
+    
+    if not data:
+        return 400, {
+            'error': 'Bad request',
+            'detail': 'No student data provided'
+        }
+    
+    created_count = 0
+    failed_users = []
+    
+    with transaction.atomic():
+        for student_data in data:
+            try:
+                # Generate username from email (part before @)
+                username = student_data.email.split('@')[0]
+                
+                # Check if user already exists
+                if User.objects.filter(username=username).exists():
+                    failed_users.append(f"{student_data.first_name} {student_data.last_name} - username '{username}' already exists")
+                    continue
+                
+                if User.objects.filter(email=student_data.email).exists():
+                    failed_users.append(f"{student_data.first_name} {student_data.last_name} - email already exists")
+                    continue
+                
+                # Create user
+                user = User.objects.create_user(
+                    username=username,
+                    email=student_data.email,
+                    first_name=student_data.first_name,
+                    last_name=student_data.last_name,
+                    password=f"{student_data.last_name.lower()}{student_data.first_name.lower()}123"  # Default password
+                )
+                
+                # Create profile
+                Profile.objects.create(user=user)
+                
+                # Add to class
+                teacher_class.tanulok.add(user)
+                
+                created_count += 1
+                
+            except Exception as e:
+                failed_users.append(f"{student_data.first_name} {student_data.last_name} - {str(e)}")
+    
+    return 201, {
+        'created_count': created_count,
+        'failed_users': failed_users,
+        'message': f'Successfully created {created_count} students. {len(failed_users)} failed.'
+    }

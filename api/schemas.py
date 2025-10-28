@@ -142,3 +142,35 @@ class TeacherCommentUpdateResponse(Schema):
     id: int
     megjegyzes_tanar: Optional[str] = None
     message: str
+
+
+# Diakjaim schemas  
+class IgazolasSimpleSchema(Schema):
+    id: int
+    eleje: datetime
+    vege: datetime
+    tipus: IgazolasTipusSchema
+    allapot: str
+    rogzites_datuma: date
+    megjegyzes_diak: Optional[str] = None
+
+
+class DiakjaSignleSchema(Schema):
+    id: int
+    username: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    igazolasok: List[IgazolasSimpleSchema]
+
+
+class DiakjaCreateRequest(Schema):
+    last_name: str
+    first_name: str
+    email: str
+
+
+class DiakjaCreateResponse(Schema):
+    created_count: int
+    failed_users: List[str]
+    message: str
