@@ -1,0 +1,6 @@
+git pull
+/root/f-igazolas-backend/python3 manage.py collectstatic --noinput
+/root/f-igazolas-backend/python3 manage.py migrate --noinput
+systemctl restart ikapi.service
+sleep 5
+systemctl status ikapi.service
