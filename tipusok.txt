@@ -1,0 +1,6 @@
+Stúdiós Távollét - Iskolaérdekű Távollét - Ezen időpontban a tanuló iskolaérdekű tevékenységet végzett a Stúdió keretein belül
+Médiás Távollét - Iskolaérdekű Távollét - Ezen időpontban a tanuló iskolaérdekű, Média tagozattal kapcsolatos tevékenységet végzett
+Orvosi Igazolás - Orvosi igazolás - A tanuló orvosi ellátásban részesült (akkor kell ebben a rendszerben rögzíteni, ha pl. az EESZT-n kersztül nem lett feltöltve az orvosi igazolás)
+Családi Okok - Szülői igazolás - A tanuló családi okok miatt volt távol
+Közlekedés - ??? - A tanuló közlekedési problémák miatt nem tudott részt venni az órán (pl. BKK, MÁV vagy forgalom) 
+Egyéb - ??? - Egyéb okok miatt volt távol a tanuló
