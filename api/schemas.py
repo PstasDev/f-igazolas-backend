@@ -109,3 +109,36 @@ class IgazolasCreateRequest(Schema):
     diak_extra_ido_elotte: Optional[int] = None
     diak_extra_ido_utana: Optional[int] = None
     imgDriveURL: Optional[str] = None
+
+
+# Quick action schemas
+class QuickActionRequest(Schema):
+    action: str  # 'Elfogadva' or 'Elutasítva'
+
+
+class BulkQuickActionRequest(Schema):
+    action: str  # 'Elfogadva' or 'Elutasítva'
+    ids: List[int]  # List of igazolas IDs
+
+
+class QuickActionResponse(Schema):
+    id: int
+    allapot: str
+    message: str
+
+
+class BulkQuickActionResponse(Schema):
+    updated_count: int
+    failed_ids: List[int]
+    message: str
+
+
+# Teacher comment edit schemas
+class TeacherCommentUpdateRequest(Schema):
+    megjegyzes_tanar: Optional[str] = None
+
+
+class TeacherCommentUpdateResponse(Schema):
+    id: int
+    megjegyzes_tanar: Optional[str] = None
+    message: str

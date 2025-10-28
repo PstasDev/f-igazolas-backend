@@ -8,7 +8,9 @@ from .schemas import (
     LoginRequest, TokenResponse, ErrorResponse,
     ProfileSchema, OsztalySchema, MulasztasSchema,
     IgazolasTipusSchema, IgazolasSchema, IgazolasCreateRequest,
-    OsztalySimpleSchema
+    OsztalySimpleSchema, QuickActionRequest, BulkQuickActionRequest,
+    QuickActionResponse, BulkQuickActionResponse, TeacherCommentUpdateRequest,
+    TeacherCommentUpdateResponse
 )
 from .jwt_utils import generate_jwt_token, decode_jwt_token
 from .authentication import JWTAuth
@@ -474,6 +476,132 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         'allapot': igazolas.allapot,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
         'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
+    }
+
+
+# Quick Action Endpoints
+
+@api.post("/igazolas/{igazolas_id}/quick-action", response={200: QuickActionResponse, 400: ErrorResponse, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
+def quick_action_igazolas(request, igazolas_id: int, data: QuickActionRequest):
+    """
+    Quick action to change igazolas status (Elfogadva/Elutasítva/Függőben).
+    
+    Requires authentication. Only teachers (osztályfőnök) can perform quick actions.
+    """
+    # Validate action
+    valid_actions = ['Elfogadva', 'Elutasítva', 'Függőben']
+    if data.action not in valid_actions:
+        return 400, {
+            'error': 'Invalid action',
+            'detail': f'Action must be one of: {", ".join(valid_actions)}'
+        }
+    
+    # Get the igazolas
+    try:
+        igazolas = Igazolas.objects.get(id=igazolas_id)
+    except Igazolas.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'Igazolas with id {igazolas_id} does not exist'
+        }
+    
+    # Check if user is osztályfőnök of the student's class
+    student_class = igazolas.profile.osztalyom()
+    if not student_class or request.auth not in student_class.osztalyfonokok.all():
+        return 401, {
+            'error': 'Unauthorized',
+            'detail': 'Only class teachers can perform quick actions'
+        }
+    
+    # Update the status
+    igazolas.allapot = data.action
+    igazolas.save()
+    
+    return 200, {
+        'id': igazolas.id,
+        'allapot': igazolas.allapot,
+        'message': f'Igazolas status updated to {data.action}'
+    }
+
+
+@api.post("/igazolas/quick-action/bulk", response={200: BulkQuickActionResponse, 400: ErrorResponse, 401: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
+def bulk_quick_action_igazolas(request, data: BulkQuickActionRequest):
+    """
+    Bulk quick action to change multiple igazolas statuses (Elfogadva/Elutasítva/Függőben).
+    
+    Requires authentication. Only teachers (osztályfőnök) can perform bulk quick actions.
+    """
+    # Validate action
+    valid_actions = ['Elfogadva', 'Elutasítva', 'Függőben']
+    if data.action not in valid_actions:
+        return 400, {
+            'error': 'Invalid action',
+            'detail': f'Action must be one of: {", ".join(valid_actions)}'
+        }
+    
+    if not data.ids:
+        return 400, {
+            'error': 'Invalid request',
+            'detail': 'No IDs provided'
+        }
+    
+    # Get all igazolasok that exist
+    igazolasok = Igazolas.objects.filter(id__in=data.ids).select_related('profile')
+    found_ids = set(igazolas.id for igazolas in igazolasok)
+    failed_ids = [id for id in data.ids if id not in found_ids]
+    
+    # Check permissions and update
+    updated_count = 0
+    for igazolas in igazolasok:
+        student_class = igazolas.profile.osztalyom()
+        if student_class and request.auth in student_class.osztalyfonokok.all():
+            igazolas.allapot = data.action
+            igazolas.save()
+            updated_count += 1
+        else:
+            failed_ids.append(igazolas.id)
+    
+    return 200, {
+        'updated_count': updated_count,
+        'failed_ids': failed_ids,
+        'message': f'Updated {updated_count} igazolas(ok) to {data.action}'
+    }
+
+
+# Teacher Comment Edit Endpoint
+
+@api.put("/igazolas/{igazolas_id}/teacher-comment", response={200: TeacherCommentUpdateResponse, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
+def update_teacher_comment(request, igazolas_id: int, data: TeacherCommentUpdateRequest):
+    """
+    Update osztályfőnök megjegyzése (teacher comment) for an igazolas.
+    
+    Requires authentication. Only teachers (osztályfőnök) can edit teacher comments.
+    """
+    # Get the igazolas
+    try:
+        igazolas = Igazolas.objects.get(id=igazolas_id)
+    except Igazolas.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'Igazolas with id {igazolas_id} does not exist'
+        }
+    
+    # Check if user is osztályfőnök of the student's class
+    student_class = igazolas.profile.osztalyom()
+    if not student_class or request.auth not in student_class.osztalyfonokok.all():
+        return 401, {
+            'error': 'Unauthorized',
+            'detail': 'Only class teachers can edit teacher comments'
+        }
+    
+    # Update the teacher comment
+    igazolas.megjegyzes_tanar = data.megjegyzes_tanar
+    igazolas.save()
+    
+    return 200, {
+        'id': igazolas.id,
+        'megjegyzes_tanar': igazolas.megjegyzes_tanar,
+        'message': 'Teacher comment updated successfully'
     }
 
 

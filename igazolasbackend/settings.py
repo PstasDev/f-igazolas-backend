@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
 from pathlib import Path
+from decouple import config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -20,12 +21,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-*kx(dkh)rsd$a5-bz215u_#aknn4gtfzjv_q)!w7)@a7#zr%wf'
+SECRET_KEY = config('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='', cast=lambda v: [s.strip() for s in v.split(',') if s.strip()])
 
 
 # Application definition
@@ -126,13 +127,13 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # JWT Configuration
-JWT_SECRET_KEY = SECRET_KEY  # In production, use a separate secret key
-JWT_ALGORITHM = 'HS256'
-JWT_EXPIRATION_DELTA = 86400  # 24 hours in seconds
+JWT_SECRET_KEY = config('JWT_SECRET_KEY', default=SECRET_KEY)  # Use separate key or fallback to SECRET_KEY
+JWT_ALGORITHM = config('JWT_ALGORITHM', default='HS256')
+JWT_EXPIRATION_DELTA = config('JWT_EXPIRATION_DELTA', default=86400, cast=int)  # 24 hours in seconds
 
 # CORS Configuration
-CORS_ALLOW_ALL_ORIGINS = True  # In production, specify allowed origins
-CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=True, cast=bool)  # In production, specify allowed origins
+CORS_ALLOW_CREDENTIALS = config('CORS_ALLOW_CREDENTIALS', default=True, cast=bool)
 CORS_ALLOW_HEADERS = [
     'accept',
     'accept-encoding',
