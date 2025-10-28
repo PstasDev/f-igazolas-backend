@@ -280,7 +280,6 @@ def list_igazolas(request):
             'eleje': igazolas.eleje,
             'vege': igazolas.vege,
             'tipus': igazolas.tipus,
-            'megjegyzes': igazolas.megjegyzes,
             'rogzites_datuma': igazolas.rogzites_datuma,
             'megjegyzes_diak': igazolas.megjegyzes_diak,
             'diak': igazolas.diak,
