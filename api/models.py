@@ -100,6 +100,7 @@ class Igazolas(models.Model):
     diak = models.BooleanField(default=True)  # True ha Form repsonse
     ftv = models.BooleanField(default=False)  # True ha FTV-ből lett importálva
     korrigalt = models.BooleanField(default=False)  # FTVből importált igazolás, diák által korrigált változata
+    ftv_hianyzas_id = models.IntegerField(null=True, blank=True, unique=True)  # FTV hiányzás ID for sync tracking
 
     # Korrekció
     diak_extra_ido_elotte = models.IntegerField(null=True, blank=True)  

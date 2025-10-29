@@ -162,3 +162,6 @@ RESET_TOKEN_EXPIRY_MINUTES = config('RESET_TOKEN_EXPIRY_MINUTES', default=10, ca
 
 # BKK API Configuration
 BKK_TOKEN = config('BKK_TOKEN', default='')
+
+# FTV External API Configuration
+FTV_EXTERNAL_ACCESS_TOKEN = config('FTV_EXTERNAL_ACCESS_TOKEN', default='')

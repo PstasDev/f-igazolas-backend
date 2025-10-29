@@ -30,6 +30,7 @@ from .schemas import (
 from .jwt_utils import generate_jwt_token, decode_jwt_token
 from .authentication import JWTAuth
 from .email_utils import send_otp_email, send_password_changed_notification
+from .ftv_sync import sync_with_ftv, FTVSyncError
 
 logger = logging.getLogger(__name__)
 
@@ -366,7 +367,23 @@ def get_igazolas_tipus(request, tipus_id: int):
 
 @api.get("/igazolas", response={200: List[IgazolasSchema], 401: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
 def list_igazolas(request):
-    """Get all justifications (requires authentication)"""
+    """
+    Get all justifications (requires authentication).
+    
+    This endpoint automatically syncs with FTV before returning data.
+    Only accessible by osztályfőnök (class teachers).
+    """
+    # Sync with FTV before fetching data
+    try:
+        logger.info(f"User {request.auth.username} requested /igazolas - triggering FTV sync")
+        sync_stats = sync_with_ftv()
+        logger.info(f"FTV sync completed: {sync_stats}")
+    except FTVSyncError as e:
+        logger.error(f"FTV sync failed but continuing with existing data: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error during FTV sync: {str(e)}")
+    
+    # Fetch igazolások for the teacher's class
     igazolasok = Profile.objects.filter(user=request.auth).first().osztalyom_igazolasai().select_related('profile', 'tipus').prefetch_related('mulasztasok')
     result = []
     
@@ -399,6 +416,7 @@ def list_igazolas(request):
             'diak': igazolas.diak,
             'ftv': igazolas.ftv,
             'korrigalt': igazolas.korrigalt,
+            'ftv_hianyzas_id': igazolas.ftv_hianyzas_id,
             'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
             'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
             'imgDriveURL': igazolas.imgDriveURL,
@@ -414,7 +432,22 @@ def list_igazolas(request):
 
 @api.get("/igazolas/my", response={200: List[IgazolasSchema], 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
 def get_my_igazolas(request):
-    """Get current user's justifications (requires authentication)"""
+    """
+    Get current user's justifications (requires authentication).
+    
+    This endpoint automatically syncs with FTV before returning data.
+    Students can see their own records here.
+    """
+    # Sync with FTV before fetching data
+    try:
+        logger.info(f"User {request.auth.username} requested /igazolas/my - triggering FTV sync")
+        sync_stats = sync_with_ftv()
+        logger.info(f"FTV sync completed: {sync_stats}")
+    except FTVSyncError as e:
+        logger.error(f"FTV sync failed but continuing with existing data: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error during FTV sync: {str(e)}")
+    
     try:
         profile = Profile.objects.get(user=request.auth)
         igazolasok = Igazolas.objects.filter(profile=profile).select_related('tipus').prefetch_related('mulasztasok')
@@ -449,6 +482,7 @@ def get_my_igazolas(request):
                 'diak': igazolas.diak,
                 'ftv': igazolas.ftv,
                 'korrigalt': igazolas.korrigalt,
+                'ftv_hianyzas_id': igazolas.ftv_hianyzas_id,
                 'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
                 'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
                 'imgDriveURL': igazolas.imgDriveURL,
@@ -500,6 +534,7 @@ def get_igazolas(request, igazolas_id: int):
         'diak': igazolas.diak,
         'ftv': igazolas.ftv,
         'korrigalt': igazolas.korrigalt,
+        'ftv_hianyzas_id': igazolas.ftv_hianyzas_id,
         'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
         'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
         'imgDriveURL': igazolas.imgDriveURL,
@@ -583,6 +618,7 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         'diak': igazolas.diak,
         'ftv': igazolas.ftv,
         'korrigalt': igazolas.korrigalt,
+        'ftv_hianyzas_id': None,  # New igazolas doesn't have FTV ID
         'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
         'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
         'imgDriveURL': igazolas.imgDriveURL,
@@ -1077,3 +1113,36 @@ def create_diakjaim(request, data: List[DiakjaCreateRequest]):
         'failed_users': failed_users,
         'message': f'Successfully created {created_count} students. {len(failed_users)} failed.'
     }
+
+
+# FTV Sync Endpoints
+
+@api.post("/sync/ftv", response={200: dict, 500: ErrorResponse}, auth=jwt_auth, tags=["FTV Sync"])
+def manual_ftv_sync(request):
+    """
+    Manually trigger FTV sync (requires authentication).
+    
+    This endpoint can be called by admins to force a sync with FTV.
+    Normally, sync happens automatically when /igazolas or /igazolas/my is called.
+    """
+    try:
+        logger.info(f"Manual FTV sync triggered by user {request.auth.username}")
+        sync_stats = sync_with_ftv()
+        
+        return 200, {
+            'success': True,
+            'message': 'FTV sync completed successfully',
+            'statistics': sync_stats
+        }
+    except FTVSyncError as e:
+        logger.error(f"Manual FTV sync failed: {str(e)}")
+        return 500, {
+            'error': 'Sync failed',
+            'detail': str(e)
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error during manual FTV sync: {str(e)}")
+        return 500, {
+            'error': 'Server error',
+            'detail': 'An unexpected error occurred during sync'
+        }

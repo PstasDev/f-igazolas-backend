@@ -91,6 +91,7 @@ class IgazolasSchema(Schema):
     diak: bool
     ftv: bool
     korrigalt: bool
+    ftv_hianyzas_id: Optional[int] = None
     diak_extra_ido_elotte: Optional[int] = None
     diak_extra_ido_utana: Optional[int] = None
     imgDriveURL: Optional[str] = None
