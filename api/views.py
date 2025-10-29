@@ -3,9 +3,19 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from django.utils import timezone
+from django_ratelimit.decorators import ratelimit
+from django.views.decorators.csrf import csrf_exempt
+from django.http import HttpResponse
+from django.conf import settings
 from typing import List
+import logging
+import requests
 
-from .models import Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas
+from .models import (
+    Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas,
+    PasswordResetOTP, ForgotPasswordToken
+)
 from .schemas import (
     LoginRequest, TokenResponse, ErrorResponse,
     ProfileSchema, OsztalySchema, MulasztasSchema,
@@ -13,10 +23,15 @@ from .schemas import (
     OsztalySimpleSchema, QuickActionRequest, BulkQuickActionRequest,
     QuickActionResponse, BulkQuickActionResponse, TeacherCommentUpdateRequest,
     TeacherCommentUpdateResponse, DiakjaSignleSchema, DiakjaCreateRequest, 
-    DiakjaCreateResponse
+    DiakjaCreateResponse, ForgotPasswordRequest, ForgotPasswordResponse,
+    CheckOTPRequest, CheckOTPResponse, ChangePasswordOTPRequest,
+    ChangePasswordOTPResponse
 )
 from .jwt_utils import generate_jwt_token, decode_jwt_token
 from .authentication import JWTAuth
+from .email_utils import send_otp_email, send_password_changed_notification
+
+logger = logging.getLogger(__name__)
 
 # Initialize Ninja API
 api = NinjaAPI(
@@ -27,6 +42,89 @@ api = NinjaAPI(
 
 # Initialize JWT authentication
 jwt_auth = JWTAuth()
+
+
+# BKK GTFS-RT Endpoints
+
+@api.get("/bkk/TripUpdates", auth=None, tags=["BKK"])
+def bkk_trip_updates(request):
+    """
+    BKK Trip Updates proxy endpoint.
+    
+    Forwards requests to BKK GTFS-RT TripUpdates API and returns the response as-is.
+    """
+    bkk_token = settings.BKK_TOKEN
+    if not bkk_token:
+        return HttpResponse("BKK token not configured", status=500, content_type="text/plain")
+    
+    try:
+        response = requests.get(
+            f"https://go.bkk.hu/api/query/v1/ws/gtfs-rt/full/TripUpdates.txt?key={bkk_token}",
+            timeout=30
+        )
+        
+        return HttpResponse(
+            response.content,
+            status=response.status_code,
+            content_type=response.headers.get('Content-Type', 'text/plain;charset=utf-8')
+        )
+    except requests.RequestException as e:
+        logger.error(f"Error fetching BKK TripUpdates: {str(e)}")
+        return HttpResponse("Error fetching BKK data", status=500, content_type="text/plain")
+
+
+@api.get("/bkk/Alerts", auth=None, tags=["BKK"])
+def bkk_alerts(request):
+    """
+    BKK Alerts proxy endpoint.
+    
+    Forwards requests to BKK GTFS-RT Alerts API and returns the response as-is.
+    """
+    bkk_token = settings.BKK_TOKEN
+    if not bkk_token:
+        return HttpResponse("BKK token not configured", status=500, content_type="text/plain")
+    
+    try:
+        response = requests.get(
+            f"https://go.bkk.hu/api/query/v1/ws/gtfs-rt/full/Alerts.txt?key={bkk_token}",
+            timeout=30
+        )
+        
+        return HttpResponse(
+            response.content,
+            status=response.status_code,
+            content_type=response.headers.get('Content-Type', 'text/plain;charset=utf-8')
+        )
+    except requests.RequestException as e:
+        logger.error(f"Error fetching BKK Alerts: {str(e)}")
+        return HttpResponse("Error fetching BKK data", status=500, content_type="text/plain")
+
+
+@api.get("/bkk/VehiclePositions", auth=None, tags=["BKK"])
+def bkk_vehicle_positions(request):
+    """
+    BKK Vehicle Positions proxy endpoint.
+    
+    Forwards requests to BKK GTFS-RT VehiclePositions API and returns the response as-is.
+    """
+    bkk_token = settings.BKK_TOKEN
+    if not bkk_token:
+        return HttpResponse("BKK token not configured", status=500, content_type="text/plain")
+    
+    try:
+        response = requests.get(
+            f"https://go.bkk.hu/api/query/v1/ws/gtfs-rt/full/VehiclePositions.txt?key={bkk_token}",
+            timeout=30
+        )
+        
+        return HttpResponse(
+            response.content,
+            status=response.status_code,
+            content_type=response.headers.get('Content-Type', 'text/plain;charset=utf-8')
+        )
+    except requests.RequestException as e:
+        logger.error(f"Error fetching BKK VehiclePositions: {str(e)}")
+        return HttpResponse("Error fetching BKK data", status=500, content_type="text/plain")
 
 
 # Helper functions
@@ -304,6 +402,7 @@ def list_igazolas(request):
             'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
             'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
             'imgDriveURL': igazolas.imgDriveURL,
+            'bkk_verification': igazolas.bkk_verification,
             'allapot': igazolas.allapot,
             'megjegyzes_tanar': igazolas.megjegyzes_tanar,
             'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
@@ -345,7 +444,6 @@ def get_my_igazolas(request):
                 'eleje': igazolas.eleje,
                 'vege': igazolas.vege,
                 'tipus': igazolas.tipus,
-                'megjegyzes': igazolas.megjegyzes,
                 'rogzites_datuma': igazolas.rogzites_datuma,
                 'megjegyzes_diak': igazolas.megjegyzes_diak,
                 'diak': igazolas.diak,
@@ -354,6 +452,7 @@ def get_my_igazolas(request):
                 'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
                 'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
                 'imgDriveURL': igazolas.imgDriveURL,
+                'bkk_verification': igazolas.bkk_verification,
                 'allapot': igazolas.allapot,
                 'megjegyzes_tanar': igazolas.megjegyzes_tanar,
                 'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
@@ -396,7 +495,6 @@ def get_igazolas(request, igazolas_id: int):
         'eleje': igazolas.eleje,
         'vege': igazolas.vege,
         'tipus': igazolas.tipus,
-        'megjegyzes': igazolas.megjegyzes,
         'rogzites_datuma': igazolas.rogzites_datuma,
         'megjegyzes_diak': igazolas.megjegyzes_diak,
         'diak': igazolas.diak,
@@ -405,6 +503,7 @@ def get_igazolas(request, igazolas_id: int):
         'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
         'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
         'imgDriveURL': igazolas.imgDriveURL,
+        'bkk_verification': igazolas.bkk_verification,
         'allapot': igazolas.allapot,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
         'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
@@ -448,10 +547,11 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         megjegyzes_diak=data.megjegyzes_diak,
         diak=data.diak if data.diak is not None else True,
         ftv=False,  # Always False for user submissions
-        korrigalt=data.korrigalt if data.korrigalt is not None else False,
-        diak_extra_ido_elotte=data.diak_extra_ido_elotte,
-        diak_extra_ido_utana=data.diak_extra_ido_utana,
-        imgDriveURL=data.imgDriveURL
+        korrigalt=False,
+        diak_extra_ido_elotte=None,
+        diak_extra_ido_utana=None,
+        imgDriveURL=data.imgDriveURL,
+        bkk_verification=data.bkk_verification
     )
     
     osztaly = igazolas.profile.osztalyom()
@@ -478,7 +578,6 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         'eleje': igazolas.eleje,
         'vege': igazolas.vege,
         'tipus': igazolas.tipus,
-        'megjegyzes': igazolas.megjegyzes,
         'rogzites_datuma': igazolas.rogzites_datuma,
         'megjegyzes_diak': igazolas.megjegyzes_diak,
         'diak': igazolas.diak,
@@ -487,6 +586,7 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
         'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
         'imgDriveURL': igazolas.imgDriveURL,
+        'bkk_verification': igazolas.bkk_verification,
         'allapot': igazolas.allapot,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
         'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
@@ -619,6 +719,214 @@ def update_teacher_comment(request, igazolas_id: int, data: TeacherCommentUpdate
     }
 
 
+# Password Reset Endpoints
+
+@api.post("/forgot-password", response={200: ForgotPasswordResponse, 400: ErrorResponse, 404: ErrorResponse}, auth=None, tags=["Password Reset"])
+@csrf_exempt
+@ratelimit(key='ip', rate='3/h', method='POST', block=True)
+def forgot_password(request, data: ForgotPasswordRequest):
+    """
+    Request password reset by sending OTP to user's email.
+    
+    Rate limited to 3 requests per hour per IP.
+    """
+    try:
+        # Find user by username
+        user = User.objects.get(username=data.username, is_active=True)
+        
+        # Check if user has email
+        if not user.email:
+            return 400, {
+                'error': 'Bad request',
+                'detail': 'No email address found for this user'
+            }
+        
+        # Create OTP for user
+        otp_instance = PasswordResetOTP.create_for_user(user)
+        otp_code = otp_instance.generate_otp()
+        
+        # Send OTP email
+        email_sent = send_otp_email(user, otp_code)
+        
+        if email_sent:
+            logger.info(f"Password reset OTP sent to user {user.username}")
+            return 200, {
+                'message': 'OTP kód elküldve az email címére. Ellenőrizze a postafiókját.',
+                'email_sent': True
+            }
+        else:
+            logger.error(f"Failed to send OTP email to user {user.username}")
+            return 400, {
+                'error': 'Email sending failed',
+                'detail': 'Nem sikerült elküldeni az email-t. Kérjük próbálja újra később.'
+            }
+            
+    except User.DoesNotExist:
+        # Don't reveal if username exists or not for security
+        return 200, {
+            'message': 'Ha a felhasználónév létezik, OTP kód lett küldve az email címére.',
+            'email_sent': True
+        }
+    except Exception as e:
+        logger.error(f"Error in forgot_password: {str(e)}")
+        return 400, {
+            'error': 'Server error',
+            'detail': 'Hiba történt a kérés feldolgozása során.'
+        }
+
+
+@api.post("/check-otp", response={200: CheckOTPResponse, 400: ErrorResponse, 429: ErrorResponse}, auth=None, tags=["Password Reset"])
+@csrf_exempt
+@ratelimit(key='ip', rate='10/h', method='POST', block=True)
+def check_otp(request, data: CheckOTPRequest):
+    """
+    Verify OTP code and return temporary reset token.
+    
+    Rate limited to 10 requests per hour per IP.
+    """
+    try:
+        # Find user
+        user = User.objects.get(username=data.username, is_active=True)
+        
+        # Find active OTP
+        otp_instance = PasswordResetOTP.objects.filter(
+            user=user,
+            is_used=False
+        ).order_by('-created_at').first()
+        
+        if not otp_instance:
+            return 400, {
+                'error': 'Invalid request',
+                'detail': 'Nincs aktív OTP kérés. Kérjük kérjen új OTP kódot.'
+            }
+        
+        # Check if OTP is expired
+        if otp_instance.is_expired():
+            return 400, {
+                'error': 'OTP expired',
+                'detail': 'Az OTP kód lejárt. Kérjük kérjen új OTP kódot.'
+            }
+        
+        # Check attempts limit
+        if not otp_instance.can_attempt():
+            otp_instance.is_used = True
+            otp_instance.save()
+            return 400, {
+                'error': 'Too many attempts',
+                'detail': 'Túl sok sikertelen próbálkozás. Kérjük kérjen új OTP kódot.'
+            }
+        
+        # Increment attempts
+        otp_instance.attempts += 1
+        otp_instance.save()
+        
+        # Verify OTP
+        if otp_instance.verify_otp(data.otp_code):
+            # Mark OTP as used
+            otp_instance.is_used = True
+            otp_instance.save()
+            
+            # Create temporary reset token
+            reset_token_instance = ForgotPasswordToken.create_for_user(user)
+            
+            logger.info(f"OTP verified successfully for user {user.username}")
+            return 200, {
+                'message': 'OTP kód sikeresen ellenőrizve. Használja a tokent a jelszó megváltoztatásához.',
+                'reset_token': reset_token_instance.token,
+                'expires_in_minutes': 10
+            }
+        else:
+            return 400, {
+                'error': 'Invalid OTP',
+                'detail': f'Érvénytelen OTP kód. {5 - otp_instance.attempts} próbálkozás maradt.'
+            }
+            
+    except User.DoesNotExist:
+        return 400, {
+            'error': 'User not found',
+            'detail': 'Felhasználó nem található.'
+        }
+    except Exception as e:
+        logger.error(f"Error in check_otp: {str(e)}")
+        return 400, {
+            'error': 'Server error',
+            'detail': 'Hiba történt a kérés feldolgozása során.'
+        }
+
+
+@api.post("/change-password-otp", response={200: ChangePasswordOTPResponse, 400: ErrorResponse, 401: ErrorResponse}, auth=None, tags=["Password Reset"])
+@csrf_exempt
+@ratelimit(key='ip', rate='5/h', method='POST', block=True)
+def change_password_otp(request, data: ChangePasswordOTPRequest):
+    """
+    Change password using temporary reset token.
+    
+    Rate limited to 5 requests per hour per IP.
+    """
+    try:
+        # Find user
+        user = User.objects.get(username=data.username, is_active=True)
+        
+        # Find active reset token
+        token_instance = ForgotPasswordToken.objects.filter(
+            user=user,
+            token=data.reset_token,
+            is_used=False
+        ).first()
+        
+        if not token_instance:
+            return 401, {
+                'error': 'Invalid token',
+                'detail': 'Érvénytelen vagy nem létező reset token.'
+            }
+        
+        # Check if token is expired
+        if token_instance.is_expired():
+            return 400, {
+                'error': 'Token expired',
+                'detail': 'A reset token lejárt. Kérjük kezdje újra a jelszó visszaállítási folyamatot.'
+            }
+        
+        # Validate new password (basic validation)
+        if len(data.new_password) < 6:
+            return 400, {
+                'error': 'Weak password',
+                'detail': 'A jelszónak legalább 6 karakter hosszúnak kell lennie.'
+            }
+        
+        # Change password
+        user.set_password(data.new_password)
+        user.save()
+        
+        # Mark token as used
+        token_instance.is_used = True
+        token_instance.save()
+        
+        # Invalidate all other tokens for this user
+        ForgotPasswordToken.objects.filter(user=user, is_used=False).update(is_used=True)
+        
+        # Send confirmation email
+        send_password_changed_notification(user)
+        
+        logger.info(f"Password changed successfully for user {user.username}")
+        return 200, {
+            'message': 'Jelszó sikeresen megváltoztatva. Most már bejelentkezhet az új jelszavával.',
+            'success': True
+        }
+        
+    except User.DoesNotExist:
+        return 400, {
+            'error': 'User not found',
+            'detail': 'Felhasználó nem található.'
+        }
+    except Exception as e:
+        logger.error(f"Error in change_password_otp: {str(e)}")
+        return 400, {
+            'error': 'Server error',
+            'detail': 'Hiba történt a jelszó megváltoztatása során.'
+        }
+
+
 # Diakjaim Endpoints (Ofő only)
 
 @api.get("/diakjaim", response={200: List[DiakjaSignleSchema], 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Diakjaim"])
@@ -673,7 +981,8 @@ def get_diakjaim(request):
                 },
                 'allapot': igazolas.allapot,
                 'rogzites_datuma': igazolas.rogzites_datuma,
-                'megjegyzes_diak': igazolas.megjegyzes_diak
+                'megjegyzes_diak': igazolas.megjegyzes_diak,
+                'bkk_verification': igazolas.bkk_verification
             })
         
         student_data = {

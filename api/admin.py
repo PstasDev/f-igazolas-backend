@@ -74,7 +74,7 @@ class IgazolasAdmin(admin.ModelAdmin):
             'fields': ('megjegyzes_diak', 'diak_extra_ido_elotte', 'diak_extra_ido_utana', 'imgDriveURL')
         }),
         ('Forrás és típus', {
-            'fields': ('diak', 'ftv', 'korrigalt')
+            'fields': ('diak', 'ftv', 'korrigalt', 'bkk_verification')
         }),
         ('Tanári kezelés', {
             'fields': ('allapot', 'megjegyzes_tanar', 'kretaban_rogzitettem')

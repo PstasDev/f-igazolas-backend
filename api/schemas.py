@@ -94,6 +94,7 @@ class IgazolasSchema(Schema):
     diak_extra_ido_elotte: Optional[int] = None
     diak_extra_ido_utana: Optional[int] = None
     imgDriveURL: Optional[str] = None
+    bkk_verification: Optional[dict] = None
     allapot: str
     megjegyzes_tanar: Optional[str] = None
     kretaban_rogzitettem: bool
@@ -109,6 +110,7 @@ class IgazolasCreateRequest(Schema):
     diak_extra_ido_elotte: Optional[int] = None
     diak_extra_ido_utana: Optional[int] = None
     imgDriveURL: Optional[str] = None
+    bkk_verification: Optional[dict] = None
 
 
 # Quick action schemas
@@ -153,6 +155,7 @@ class IgazolasSimpleSchema(Schema):
     allapot: str
     rogzites_datuma: date
     megjegyzes_diak: Optional[str] = None
+    bkk_verification: Optional[dict] = None
 
 
 class DiakjaSignleSchema(Schema):
@@ -174,3 +177,35 @@ class DiakjaCreateResponse(Schema):
     created_count: int
     failed_users: List[str]
     message: str
+
+
+# Password Reset / OTP schemas
+class ForgotPasswordRequest(Schema):
+    username: str
+
+
+class ForgotPasswordResponse(Schema):
+    message: str
+    email_sent: bool
+
+
+class CheckOTPRequest(Schema):
+    username: str
+    otp_code: str
+
+
+class CheckOTPResponse(Schema):
+    message: str
+    reset_token: str
+    expires_in_minutes: int
+
+
+class ChangePasswordOTPRequest(Schema):
+    username: str
+    reset_token: str
+    new_password: str
+
+
+class ChangePasswordOTPResponse(Schema):
+    message: str
+    success: bool
