@@ -20,6 +20,13 @@ def send_otp_email(user, otp_code):
         bool: True if email sent successfully, False otherwise
     """
     try:
+        logger.debug(f"[EMAIL DEBUG] Attempting to send OTP email to {user.email}")
+        logger.debug(f"[EMAIL DEBUG] Email backend: {settings.EMAIL_BACKEND}")
+        logger.debug(f"[EMAIL DEBUG] Email host: {settings.EMAIL_HOST}")
+        logger.debug(f"[EMAIL DEBUG] Email port: {settings.EMAIL_PORT}")
+        logger.debug(f"[EMAIL DEBUG] Email use TLS: {settings.EMAIL_USE_TLS}")
+        logger.debug(f"[EMAIL DEBUG] From email: {settings.DEFAULT_FROM_EMAIL}")
+        
         subject = '[SZLG Igazoláskezelő] Elfelejtett jelszó'
         
         # Render HTML email template
@@ -30,10 +37,13 @@ def send_otp_email(user, otp_code):
             'timestamp': timezone.now(),
         })
         
+        logger.debug(f"[EMAIL DEBUG] Email template rendered successfully")
+        
         # Create plain text version
         plain_message = strip_tags(html_message)
         
         # Send email
+        logger.debug(f"[EMAIL DEBUG] Sending email with subject: {subject}")
         send_mail(
             subject=subject,
             message=plain_message,
@@ -43,11 +53,14 @@ def send_otp_email(user, otp_code):
             fail_silently=False,
         )
         
-        logger.info(f"OTP email sent successfully to {user.email}")
+        logger.info(f"✓ [EMAIL SUCCESS] OTP email sent successfully to {user.email}")
+        logger.debug(f"[EMAIL DEBUG] Email delivery completed without errors")
         return True
         
     except Exception as e:
-        logger.error(f"Failed to send OTP email to {user.email}: {str(e)}")
+        logger.error(f"✗ [EMAIL FAILED] Failed to send OTP email to {user.email}: {str(e)}")
+        logger.error(f"[EMAIL ERROR] Exception type: {type(e).__name__}")
+        logger.error(f"[EMAIL ERROR] Exception details: {str(e)}")
         return False
 
 
@@ -62,6 +75,10 @@ def send_password_changed_notification(user):
         bool: True if email sent successfully, False otherwise
     """
     try:
+        logger.debug(f"[EMAIL DEBUG] Attempting to send password change notification to {user.email}")
+        logger.debug(f"[EMAIL DEBUG] Email backend: {settings.EMAIL_BACKEND}")
+        logger.debug(f"[EMAIL DEBUG] From email: {settings.DEFAULT_FROM_EMAIL}")
+        
         subject = 'Jelszó sikeresen megváltoztatva'
         
         message = f"""
@@ -78,6 +95,7 @@ Időpont: {timezone.now().strftime('%Y. %m. %d. %H:%M')}
 Igazoláskezelő Rendszer
         """
         
+        logger.debug(f"[EMAIL DEBUG] Sending notification with subject: {subject}")
         send_mail(
             subject=subject,
             message=message,
@@ -86,9 +104,12 @@ Igazoláskezelő Rendszer
             fail_silently=False,
         )
         
-        logger.info(f"Password change notification sent to {user.email}")
+        logger.info(f"✓ [EMAIL SUCCESS] Password change notification sent to {user.email}")
+        logger.debug(f"[EMAIL DEBUG] Email delivery completed without errors")
         return True
         
     except Exception as e:
-        logger.error(f"Failed to send password change notification to {user.email}: {str(e)}")
+        logger.error(f"✗ [EMAIL FAILED] Failed to send password change notification to {user.email}: {str(e)}")
+        logger.error(f"[EMAIL ERROR] Exception type: {type(e).__name__}")
+        logger.error(f"[EMAIL ERROR] Exception details: {str(e)}")
         return False

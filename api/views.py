@@ -746,16 +746,17 @@ def forgot_password(request, data: ForgotPasswordRequest):
         otp_code = otp_instance.generate_otp()
         
         # Send OTP email
+        logger.debug(f"[VIEWS DEBUG] Calling send_otp_email for user {user.username}")
         email_sent = send_otp_email(user, otp_code)
         
         if email_sent:
-            logger.info(f"Password reset OTP sent to user {user.username}")
+            logger.info(f"✓ [VIEWS] Password reset OTP sent to user {user.username}")
             return 200, {
                 'message': 'OTP kód elküldve az email címére. Ellenőrizze a postafiókját.',
                 'email_sent': True
             }
         else:
-            logger.error(f"Failed to send OTP email to user {user.username}")
+            logger.error(f"✗ [VIEWS] Failed to send OTP email to user {user.username}")
             return 400, {
                 'error': 'Email sending failed',
                 'detail': 'Nem sikerült elküldeni az email-t. Kérjük próbálja újra később.'
@@ -906,7 +907,13 @@ def change_password_otp(request, data: ChangePasswordOTPRequest):
         ForgotPasswordToken.objects.filter(user=user, is_used=False).update(is_used=True)
         
         # Send confirmation email
-        send_password_changed_notification(user)
+        logger.debug(f"[VIEWS DEBUG] Calling send_password_changed_notification for user {user.username}")
+        notification_sent = send_password_changed_notification(user)
+        
+        if notification_sent:
+            logger.debug(f"[VIEWS DEBUG] Password change notification sent successfully to {user.username}")
+        else:
+            logger.warning(f"[VIEWS WARNING] Password changed but notification email failed for {user.username}")
         
         logger.info(f"Password changed successfully for user {user.username}")
         return 200, {
