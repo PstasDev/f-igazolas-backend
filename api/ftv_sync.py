@@ -242,9 +242,35 @@ def sync_ftv_absence(ftv_absence: Dict, user: User, ftv_tipus: IgazolasTipus) ->
     
     megjegyzes = "\n".join(megjegyzes_parts) if megjegyzes_parts else None
     
-    # All FTV synced igazolások should start as 'Függőben' (Pending) and require manual approval
-    # Teachers will review and approve/reject them locally
-    ftv_allapot = 'Függőben'
+    # Determine allapot from FTV data (for new records only)
+    # Map FTV fields to our allapot - handle various data types
+    ftv_excused = ftv_absence.get('excused', False)
+    ftv_unexcused = ftv_absence.get('unexcused', False)
+    
+    # Convert to proper boolean - handle strings, numbers, and actual booleans
+    def to_bool(value):
+        """Convert various types to boolean safely"""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            # Empty string or "0" or "false" (case insensitive) = False
+            if not value or value.strip() == '' or value.strip() == '0':
+                return False
+            return value.strip().lower() in ('true', '1', 'yes')
+        if isinstance(value, (int, float)):
+            return bool(value) and value != 0
+        return False
+    
+    ftv_excused = to_bool(ftv_excused)
+    ftv_unexcused = to_bool(ftv_unexcused)
+    
+    # Determine status based on FTV data (only used for NEW records)
+    if ftv_excused:
+        ftv_allapot = 'Elfogadva'
+    elif ftv_unexcused:
+        ftv_allapot = 'Elutasítva'
+    else:
+        ftv_allapot = 'Függőben'
     
     # Check if igazolas already exists
     try:
