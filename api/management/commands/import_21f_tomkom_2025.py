@@ -1,11 +1,10 @@
 
-import csv
-from io import StringIO
+import re
 from django.core.management.base import BaseCommand
 from django.contrib.auth import get_user_model
 from api.models import Profile, Osztaly
 
-SZAMTECH_TSV = '''veznev	kernev	harnev	email
+SZAMTECH_DATA = '''
 Bogár    Panna        bogar.panna.21f@szlgbp.hu
 Dankó    Csenge        danko.csenge.21f@szlgbp.hu
 Dittrich    Hanna        dittrich.hanna.21f@szlgbp.hu
@@ -26,18 +25,27 @@ Ugrai    Kata        ugrai.kata.21f@szlgbp.hu
 '''
 
 class Command(BaseCommand):
-    help = 'Import users from szamtechesek TSV and create profiles linked to their class.'
+    help = 'Import users from szamtechesek data and create profiles linked to their class.'
 
     def handle(self, *args, **options):
         User = get_user_model()
-        reader = csv.DictReader(StringIO(SZAMTECH_TSV), delimiter='\t')
-        for row in reader:
-            veznev = (row.get('veznev') or '').strip()
-            kernev = (row.get('kernev') or '').strip()
-            harnev = (row.get('harnev') or '').strip()
-            email = (row.get('email') or '').strip()
+        
+        for line in SZAMTECH_DATA.strip().split('\n'):
+            if not line.strip():
+                continue
+            
+            # Split by multiple spaces to get fields
+            parts = re.split(r'\s{2,}', line.strip())
+            if len(parts) < 3:
+                self.stdout.write(self.style.WARNING(f'Skipped malformed line: {line}'))
+                continue
+            
+            veznev = parts[0].strip()
+            kernev = parts[1].strip()
+            email = parts[2].strip()
+            
             if not email or not veznev or not kernev:
-                self.stdout.write(self.style.WARNING(f'Skipped row due to missing data: {row}'))
+                self.stdout.write(self.style.WARNING(f'Skipped line due to missing data: {line}'))
                 continue
             # Extract class from email (e.g., 21f)
             try:
