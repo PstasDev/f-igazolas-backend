@@ -32,11 +32,12 @@ class Command(BaseCommand):
         User = get_user_model()
         reader = csv.DictReader(StringIO(SZAMTECH_TSV), delimiter='\t')
         for row in reader:
-            veznev = row['veznev'].strip()
-            kernev = row['kernev'].strip()
-            harnev = row.get('harnev', '').strip()
-            email = row['email'].strip()
-            if not email:
+            veznev = (row.get('veznev') or '').strip()
+            kernev = (row.get('kernev') or '').strip()
+            harnev = (row.get('harnev') or '').strip()
+            email = (row.get('email') or '').strip()
+            if not email or not veznev or not kernev:
+                self.stdout.write(self.style.WARNING(f'Skipped row due to missing data: {row}'))
                 continue
             # Extract class from email (e.g., 21f)
             try:
