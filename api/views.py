@@ -30,7 +30,7 @@ from .schemas import (
 from .jwt_utils import generate_jwt_token, decode_jwt_token
 from .authentication import JWTAuth
 from .email_utils import send_otp_email, send_password_changed_notification
-from .ftv_sync import sync_with_ftv, FTVSyncError
+from .ftv_sync import sync_with_ftv, FTVSyncError, get_cache_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -366,22 +366,34 @@ def get_igazolas_tipus(request, tipus_id: int):
 # Igazolas Endpoints
 
 @api.get("/igazolas", response={200: List[IgazolasSchema], 401: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
-def list_igazolas(request):
+def list_igazolas(request, mode: str = "live"):
     """
     Get all justifications (requires authentication).
     
-    This endpoint automatically syncs with FTV before returning data.
+    This endpoint syncs with FTV based on the mode parameter.
     Only accessible by osztályfőnök (class teachers).
+    
+    Args:
+        mode: 'cached' to return stored data without sync (fast), 
+              'live' to sync with FTV first (default, slower but fresh)
     """
-    # Sync with FTV before fetching data
-    try:
-        logger.info(f"User {request.auth.username} requested /igazolas - triggering FTV sync")
-        sync_stats = sync_with_ftv()
-        logger.info(f"FTV sync completed: {sync_stats}")
-    except FTVSyncError as e:
-        logger.error(f"FTV sync failed but continuing with existing data: {str(e)}")
-    except Exception as e:
-        logger.error(f"Unexpected error during FTV sync: {str(e)}")
+    # Sync with FTV only if mode is 'live'
+    cache_metadata = None
+    if mode == "live":
+        try:
+            logger.info(f"User {request.auth.username} requested /igazolas - triggering FTV sync")
+            sync_stats = sync_with_ftv()
+            logger.info(f"FTV sync completed: {sync_stats}")
+        except FTVSyncError as e:
+            logger.error(f"FTV sync failed but continuing with existing data: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error during FTV sync: {str(e)}")
+    else:
+        logger.info(f"User {request.auth.username} requested /igazolas in cached mode - skipping FTV sync")
+    
+    # Get cache metadata to include in response headers or logging
+    cache_metadata = get_cache_metadata()
+    logger.info(f"Cache metadata: {cache_metadata}")
     
     # Fetch igazolások for the teacher's class
     igazolasok = Profile.objects.filter(user=request.auth).first().osztalyom_igazolasai().select_related('profile', 'tipus').prefetch_related('mulasztasok')
@@ -427,26 +439,40 @@ def list_igazolas(request):
         }
         result.append(igazolas_data)
     
+    # Add cache metadata to response (Ninja doesn't support custom headers easily, so we log it)
+    # The frontend can make a separate call to get metadata if needed
     return 200, result
 
 
 @api.get("/igazolas/my", response={200: List[IgazolasSchema], 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
-def get_my_igazolas(request):
+def get_my_igazolas(request, mode: str = "live"):
     """
     Get current user's justifications (requires authentication).
     
-    This endpoint automatically syncs with FTV before returning data.
+    This endpoint syncs with FTV based on the mode parameter.
     Students can see their own records here.
+    
+    Args:
+        mode: 'cached' to return stored data without sync (fast), 
+              'live' to sync with FTV first (default, slower but fresh)
     """
-    # Sync with FTV before fetching data
-    try:
-        logger.info(f"User {request.auth.username} requested /igazolas/my - triggering FTV sync")
-        sync_stats = sync_with_ftv()
-        logger.info(f"FTV sync completed: {sync_stats}")
-    except FTVSyncError as e:
-        logger.error(f"FTV sync failed but continuing with existing data: {str(e)}")
-    except Exception as e:
-        logger.error(f"Unexpected error during FTV sync: {str(e)}")
+    # Sync with FTV only if mode is 'live'
+    cache_metadata = None
+    if mode == "live":
+        try:
+            logger.info(f"User {request.auth.username} requested /igazolas/my - triggering FTV sync")
+            sync_stats = sync_with_ftv()
+            logger.info(f"FTV sync completed: {sync_stats}")
+        except FTVSyncError as e:
+            logger.error(f"FTV sync failed but continuing with existing data: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error during FTV sync: {str(e)}")
+    else:
+        logger.info(f"User {request.auth.username} requested /igazolas/my in cached mode - skipping FTV sync")
+    
+    # Get cache metadata to include in response headers or logging
+    cache_metadata = get_cache_metadata()
+    logger.info(f"Cache metadata: {cache_metadata}")
     
     try:
         profile = Profile.objects.get(user=request.auth)
@@ -1119,13 +1145,28 @@ def create_diakjaim(request, data: List[DiakjaCreateRequest]):
 
 # FTV Sync Endpoints
 
+@api.get("/sync/ftv/metadata", response={200: dict}, auth=jwt_auth, tags=["FTV Sync"])
+def get_ftv_sync_metadata(request):
+    """
+    Get FTV sync metadata (last sync time, status, etc.).
+    
+    This endpoint returns information about the last FTV sync without triggering a new sync.
+    Useful for the frontend to display cache freshness information.
+    """
+    metadata = get_cache_metadata()
+    return 200, {
+        'success': True,
+        'metadata': metadata
+    }
+
+
 @api.post("/sync/ftv", response={200: dict, 500: ErrorResponse}, auth=jwt_auth, tags=["FTV Sync"])
 def manual_ftv_sync(request):
     """
     Manually trigger FTV sync (requires authentication).
     
     This endpoint can be called by admins to force a sync with FTV.
-    Normally, sync happens automatically when /igazolas or /igazolas/my is called.
+    Normally, sync happens automatically when /igazolas or /igazolas/my is called with mode=live.
     """
     try:
         logger.info(f"Manual FTV sync triggered by user {request.auth.username}")
@@ -1134,7 +1175,8 @@ def manual_ftv_sync(request):
         return 200, {
             'success': True,
             'message': 'FTV sync completed successfully',
-            'statistics': sync_stats
+            'statistics': sync_stats,
+            'metadata': get_cache_metadata()
         }
     except FTVSyncError as e:
         logger.error(f"Manual FTV sync failed: {str(e)}")

@@ -11,7 +11,7 @@ from django.contrib.auth.models import User
 from django.db import transaction
 from typing import Dict, List, Optional
 
-from .models import Osztaly, Profile, Igazolas, IgazolasTipus
+from .models import Osztaly, Profile, Igazolas, IgazolasTipus, FTVSyncMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,34 @@ FTV_BASE_URL = "https://ftvapi.szlg.info/api/sync"
 class FTVSyncError(Exception):
     """Custom exception for FTV sync errors"""
     pass
+
+
+def get_cache_metadata() -> Dict:
+    """
+    Get FTV sync cache metadata for responses.
+    
+    Returns dict with last_sync_time, status, and age information.
+    """
+    metadata = FTVSyncMetadata.get_instance()
+    
+    result = {
+        'last_sync_time': metadata.last_sync_time.isoformat() if metadata.last_sync_time else None,
+        'last_sync_status': metadata.last_sync_status,
+        'last_sync_stats': metadata.last_sync_stats
+    }
+    
+    # Calculate time since last sync
+    if metadata.last_sync_time:
+        from datetime import datetime
+        from django.utils import timezone as django_timezone
+        age_seconds = (django_timezone.now() - metadata.last_sync_time).total_seconds()
+        result['sync_age_seconds'] = int(age_seconds)
+        result['sync_age_minutes'] = round(age_seconds / 60, 1)
+    else:
+        result['sync_age_seconds'] = None
+        result['sync_age_minutes'] = None
+    
+    return result
 
 
 def get_ftv_headers() -> Dict[str, str]:
@@ -425,11 +453,19 @@ def sync_with_ftv() -> Dict[str, int]:
             logger.error(f"Error cleaning up obsolete records: {str(e)}")
         
         logger.info(f"FTV sync completed: {stats}")
+        
+        # Update sync metadata
+        FTVSyncMetadata.update_sync('success', stats)
+        
         return stats
         
     except FTVSyncError as e:
         logger.error(f"FTV sync failed: {str(e)}")
+        # Update metadata with failed status
+        FTVSyncMetadata.update_sync('failed', stats)
         raise
     except Exception as e:
         logger.error(f"Unexpected error during FTV sync: {str(e)}")
+        # Update metadata with failed status
+        FTVSyncMetadata.update_sync('failed', stats)
         raise FTVSyncError(f"Sync failed: {str(e)}")

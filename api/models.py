@@ -214,3 +214,39 @@ class ForgotPasswordToken(models.Model):
         verbose_name = 'Forgot Password Token'
         verbose_name_plural = 'Forgot Password Tokens'
         ordering = ['-created_at']
+
+
+# FTV Sync Metadata
+
+class FTVSyncMetadata(models.Model):
+    """
+    Model to store FTV sync metadata for cache management.
+    Only one record should exist (singleton pattern).
+    """
+    last_sync_time = models.DateTimeField(null=True, blank=True)
+    last_sync_status = models.CharField(max_length=20, default='never')  # 'success', 'failed', 'never'
+    last_sync_stats = models.JSONField(null=True, blank=True)  # Store sync statistics
+    
+    @classmethod
+    def get_instance(cls):
+        """Get or create the singleton instance"""
+        instance, _ = cls.objects.get_or_create(pk=1)
+        return instance
+    
+    @classmethod
+    def update_sync(cls, status: str, stats: dict = None):
+        """Update sync metadata"""
+        instance = cls.get_instance()
+        instance.last_sync_time = timezone.now()
+        instance.last_sync_status = status
+        if stats:
+            instance.last_sync_stats = stats
+        instance.save()
+        return instance
+    
+    def __str__(self):
+        return f"FTV Sync Metadata - Last sync: {self.last_sync_time or 'Never'}"
+    
+    class Meta:
+        verbose_name = 'FTV Sync Metadata'
+        verbose_name_plural = 'FTV Sync Metadata'

@@ -2,6 +2,7 @@ import jwt
 from ninja.security import HttpBearer
 from django.contrib.auth.models import User
 from django.http import HttpRequest
+from django.utils import timezone
 from .jwt_utils import decode_jwt_token
 
 
@@ -14,6 +15,8 @@ class JWTAuth(HttpBearer):
     def authenticate(self, request: HttpRequest, token: str):
         """
         Authenticate the request using JWT token.
+        
+        Updates user's last_login timestamp on every successful authentication.
         
         Args:
             request: Django HttpRequest object
@@ -35,6 +38,11 @@ class JWTAuth(HttpBearer):
             # Fetch user from database
             try:
                 user = User.objects.get(pk=user_id, is_active=True)
+                
+                # Update last_login timestamp on every successful authentication
+                user.last_login = timezone.now()
+                user.save(update_fields=['last_login'])
+                
                 return user
             except User.DoesNotExist:
                 return None
