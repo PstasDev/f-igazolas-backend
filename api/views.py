@@ -25,7 +25,7 @@ from .schemas import (
     TeacherCommentUpdateResponse, DiakjaSignleSchema, DiakjaCreateRequest, 
     DiakjaCreateResponse, ForgotPasswordRequest, ForgotPasswordResponse,
     CheckOTPRequest, CheckOTPResponse, ChangePasswordOTPRequest,
-    ChangePasswordOTPResponse
+    ChangePasswordOTPResponse, ToggleIgazolasTipusRequest, ToggleIgazolasTipusResponse
 )
 from .jwt_utils import generate_jwt_token, decode_jwt_token
 from .authentication import JWTAuth
@@ -267,7 +267,7 @@ def get_profile(request, profile_id: int):
 @api.get("/osztaly", response={200: List[OsztalySchema], 401: ErrorResponse}, auth=jwt_auth, tags=["Osztaly"])
 def list_osztaly(request):
     """Get all classes (requires authentication)"""
-    osztalyok = Osztaly.objects.all()
+    osztalyok = Osztaly.objects.all().prefetch_related('nem_fogadott_igazolas_tipusok')
     result = []
     
     for osztaly in osztalyok:
@@ -293,6 +293,16 @@ def list_osztaly(request):
                     'last_name': of.last_name,
                     'email': of.email
                 } for of in osztaly.osztalyfonokok.all()
+            ],
+            'nem_fogadott_igazolas_tipusok': [
+                {
+                    'id': tipus.id,
+                    'nev': tipus.nev,
+                    'leiras': tipus.leiras,
+                    'beleszamit': tipus.beleszamit,
+                    'iskolaerdeku': tipus.iskolaerdeku,
+                    'nem_fogado_osztalyok': None  # Avoid circular reference
+                } for tipus in osztaly.nem_fogadott_igazolas_tipusok.all()
             ]
         }
         result.append(osztaly_data)
@@ -303,7 +313,7 @@ def list_osztaly(request):
 @api.get("/osztaly/{osztaly_id}", response={200: OsztalySchema, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Osztaly"])
 def get_osztaly(request, osztaly_id: int):
     """Get class by ID (requires authentication)"""
-    osztaly = get_object_or_404(Osztaly, id=osztaly_id)
+    osztaly = get_object_or_404(Osztaly.objects.prefetch_related('nem_fogadott_igazolas_tipusok'), id=osztaly_id)
     
     return 200, {
         'id': osztaly.id,
@@ -327,6 +337,16 @@ def get_osztaly(request, osztaly_id: int):
                 'last_name': of.last_name,
                 'email': of.email
             } for of in osztaly.osztalyfonokok.all()
+        ],
+        'nem_fogadott_igazolas_tipusok': [
+            {
+                'id': tipus.id,
+                'nev': tipus.nev,
+                'leiras': tipus.leiras,
+                'beleszamit': tipus.beleszamit,
+                'iskolaerdeku': tipus.iskolaerdeku,
+                'nem_fogado_osztalyok': None  # Avoid circular reference
+            } for tipus in osztaly.nem_fogadott_igazolas_tipusok.all()
         ]
     }
 
@@ -352,15 +372,109 @@ def get_mulasztas(request, mulasztas_id: int):
 @api.get("/igazolas-tipus", response={200: List[IgazolasTipusSchema], 401: ErrorResponse}, auth=jwt_auth, tags=["IgazolasTipus"])
 def list_igazolas_tipus(request):
     """Get all justification types (requires authentication)"""
-    tipusok = IgazolasTipus.objects.all()
-    return 200, list(tipusok)
+    tipusok = IgazolasTipus.objects.all().prefetch_related('nem_fogado_osztalyok')
+    result = []
+    
+    for tipus in tipusok:
+        nem_fogado_osztalyok = [
+            {
+                'id': osztaly.id,
+                'tagozat': osztaly.tagozat,
+                'kezdes_eve': osztaly.kezdes_eve,
+                'nev': str(osztaly)
+            }
+            for osztaly in tipus.nem_fogado_osztalyok.all()
+        ]
+        
+        tipus_data = {
+            'id': tipus.id,
+            'nev': tipus.nev,
+            'leiras': tipus.leiras,
+            'beleszamit': tipus.beleszamit,
+            'iskolaerdeku': tipus.iskolaerdeku,
+            'nem_fogado_osztalyok': nem_fogado_osztalyok
+        }
+        result.append(tipus_data)
+    
+    return 200, result
 
 
 @api.get("/igazolas-tipus/{tipus_id}", response={200: IgazolasTipusSchema, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["IgazolasTipus"])
 def get_igazolas_tipus(request, tipus_id: int):
     """Get justification type by ID (requires authentication)"""
-    tipus = get_object_or_404(IgazolasTipus, id=tipus_id)
-    return 200, tipus
+    tipus = get_object_or_404(IgazolasTipus.objects.prefetch_related('nem_fogado_osztalyok'), id=tipus_id)
+    
+    nem_fogado_osztalyok = [
+        {
+            'id': osztaly.id,
+            'tagozat': osztaly.tagozat,
+            'kezdes_eve': osztaly.kezdes_eve,
+            'nev': str(osztaly)
+        }
+        for osztaly in tipus.nem_fogado_osztalyok.all()
+    ]
+    
+    return 200, {
+        'id': tipus.id,
+        'nev': tipus.nev,
+        'leiras': tipus.leiras,
+        'beleszamit': tipus.beleszamit,
+        'iskolaerdeku': tipus.iskolaerdeku,
+        'nem_fogado_osztalyok': nem_fogado_osztalyok
+    }
+
+
+@api.put("/osztaly/igazolas-tipus/toggle", response={200: ToggleIgazolasTipusResponse, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["IgazolasTipus"])
+def toggle_igazolas_tipus_for_osztaly(request, data: ToggleIgazolasTipusRequest):
+    """
+    Enable or disable a specific igazolas tipus for the teacher's own class.
+    
+    Requires authentication. Only class teachers (ofő) can access this endpoint.
+    When enabled=True, the tipus is accepted (removed from nem_fogadott_igazolas_tipusok).
+    When enabled=False, the tipus is not accepted (added to nem_fogadott_igazolas_tipusok).
+    """
+    # Check if user is a class teacher
+    if not is_class_teacher(request.auth):
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only class teachers (ofő) can modify igazolas tipus settings'
+        }
+    
+    # Get the teacher's class
+    teacher_class = get_teacher_class(request.auth)
+    if not teacher_class:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'No class found for this teacher'
+        }
+    
+    # Verify tipus exists
+    try:
+        tipus = IgazolasTipus.objects.get(id=data.tipus_id)
+    except IgazolasTipus.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'IgazolasTipus with id {data.tipus_id} does not exist'
+        }
+    
+    # Toggle the tipus
+    if data.enabled:
+        # Enable: remove from nem_fogadott_igazolas_tipusok
+        teacher_class.nem_fogadott_igazolas_tipusok.remove(tipus)
+        message = f'Igazolas tipus "{tipus.nev}" is now accepted for class {teacher_class}'
+    else:
+        # Disable: add to nem_fogadott_igazolas_tipusok
+        teacher_class.nem_fogadott_igazolas_tipusok.add(tipus)
+        message = f'Igazolas tipus "{tipus.nev}" is now NOT accepted for class {teacher_class}'
+    
+    logger.info(f"Teacher {request.auth.username} toggled tipus {tipus.nev} (ID: {tipus.id}) to {'enabled' if data.enabled else 'disabled'} for class {teacher_class}")
+    
+    return 200, {
+        'message': message,
+        'success': True,
+        'tipus_id': tipus.id,
+        'enabled': data.enabled
+    }
 
 
 # Igazolas Endpoints

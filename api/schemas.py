@@ -53,6 +53,7 @@ class OsztalySchema(Schema):
     nev: str
     tanulok: List[UserSchema]
     osztalyfonokok: List[UserSchema]
+    nem_fogadott_igazolas_tipusok: Optional[List['IgazolasTipusSchema']] = None
 
 
 # Mulasztas schemas
@@ -75,6 +76,7 @@ class IgazolasTipusSchema(Schema):
     leiras: Optional[str] = None
     beleszamit: bool
     iskolaerdeku: bool
+    nem_fogado_osztalyok: Optional[List[OsztalySimpleSchema]] = None
 
 
 # Igazolas schemas
@@ -210,3 +212,16 @@ class ChangePasswordOTPRequest(Schema):
 class ChangePasswordOTPResponse(Schema):
     message: str
     success: bool
+
+
+# Osztaly Igazolas Tipus Management schemas
+class ToggleIgazolasTipusRequest(Schema):
+    tipus_id: int
+    enabled: bool  # True to enable (allow), False to disable (not accept)
+
+
+class ToggleIgazolasTipusResponse(Schema):
+    message: str
+    success: bool
+    tipus_id: int
+    enabled: bool

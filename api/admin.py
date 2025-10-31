@@ -22,7 +22,7 @@ class OsztalyAdmin(admin.ModelAdmin):
     list_display = ['id', '__str__', 'tagozat', 'kezdes_eve', 'get_tanulok_count', 'get_osztalyfonokok_count']
     list_filter = ['tagozat', 'kezdes_eve']
     search_fields = ['tagozat']
-    filter_horizontal = ['tanulok', 'osztalyfonokok']
+    filter_horizontal = ['tanulok', 'osztalyfonokok', 'nem_fogadott_igazolas_tipusok']
     
     def get_tanulok_count(self, obj):
         return obj.tanulok.count()

@@ -32,6 +32,7 @@ class Osztaly(models.Model):
 
     tanulok = models.ManyToManyField(User, blank=True)
     osztalyfonokok = models.ManyToManyField(User, related_name='osztalyfonokok', blank=True)
+    nem_fogadott_igazolas_tipusok = models.ManyToManyField('IgazolasTipus', blank=True, related_name='nem_fogado_osztalyok')
 
     def osztaly_igazolasai(self):
         return Igazolas.objects.filter(profile__user__in=self.tanulok.all())
