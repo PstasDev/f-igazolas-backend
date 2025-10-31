@@ -1073,21 +1073,23 @@ def create_diakjaim(request, data: List[DiakjaCreateRequest]):
     created_count = 0
     failed_users = []
     
-    with transaction.atomic():
-        for student_data in data:
-            try:
-                # Generate username from email (part before @)
-                username = student_data.email.split('@')[0]
-                
-                # Check if user already exists
-                if User.objects.filter(username=username).exists():
-                    failed_users.append(f"{student_data.first_name} {student_data.last_name} - username '{username}' already exists")
-                    continue
-                
-                if User.objects.filter(email=student_data.email).exists():
-                    failed_users.append(f"{student_data.first_name} {student_data.last_name} - email already exists")
-                    continue
-                
+    # Process each student in a separate transaction to avoid long-running locks
+    for student_data in data:
+        try:
+            # Generate username from email (part before @)
+            username = student_data.email.split('@')[0]
+            
+            # Check if user already exists (outside transaction for faster checks)
+            if User.objects.filter(username=username).exists():
+                failed_users.append(f"{student_data.first_name} {student_data.last_name} - username '{username}' already exists")
+                continue
+            
+            if User.objects.filter(email=student_data.email).exists():
+                failed_users.append(f"{student_data.first_name} {student_data.last_name} - email already exists")
+                continue
+            
+            # Create user, profile, and add to class in a single transaction
+            with transaction.atomic():
                 # Create user
                 user = User.objects.create_user(
                     username=username,
@@ -1102,11 +1104,11 @@ def create_diakjaim(request, data: List[DiakjaCreateRequest]):
                 
                 # Add to class
                 teacher_class.tanulok.add(user)
-                
-                created_count += 1
-                
-            except Exception as e:
-                failed_users.append(f"{student_data.first_name} {student_data.last_name} - {str(e)}")
+            
+            created_count += 1
+            
+        except Exception as e:
+            failed_users.append(f"{student_data.first_name} {student_data.last_name} - {str(e)}")
     
     return 201, {
         'created_count': created_count,
