@@ -616,6 +616,24 @@ def sync_user_absences_from_ftv(user: User, debug_performance: bool = False) -> 
             ftv_user_id = ftv_profile['user_id']
             print(f"   ✓ Found FTV user ID: {ftv_user_id}\n")
             logger.info(f"Found FTV user ID {ftv_user_id} for {user.username}")
+            
+            # Check if profile contains class information and sync it immediately
+            if 'osztaly' in ftv_profile and ftv_profile['osztaly']:
+                print(f"📚 Found class info in FTV profile:")
+                ftv_osztaly_data = ftv_profile['osztaly']
+                print(f"   → Class: {ftv_osztaly_data.get('startYear')}/{ftv_osztaly_data.get('szekcio')}")
+                profile_osztaly = sync_or_create_osztaly(ftv_osztaly_data)
+                print(f"   → Synced to osztaly: {profile_osztaly}")
+                
+                # Add user to their correct class if not already there
+                if not profile_osztaly.tanulok.filter(id=user.id).exists():
+                    profile_osztaly.tanulok.add(user)
+                    logger.info(f"Added {user.username} to class {profile_osztaly} (from FTV profile)")
+                    print(f"   ✓ User added to class {profile_osztaly}\n")
+                else:
+                    print(f"   ✓ User already in class {profile_osztaly}\n")
+            else:
+                print(f"⚠️  No class info in FTV profile - will use class from absences if available\n")
         except Exception as e:
             print(f"   ✗ ERROR fetching FTV profile: {str(e)}\n")
             logger.error(f"Failed to fetch FTV profile for {user.email}: {str(e)}")
