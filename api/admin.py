@@ -1,5 +1,37 @@
 from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.contrib.auth.models import User
 from .models import Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas
+
+
+# Custom filter for last_login that excludes nulls
+class HasLoggedInFilter(admin.SimpleListFilter):
+    title = 'bejelentkezés státusz'
+    parameter_name = 'has_logged_in'
+    
+    def lookups(self, request, model_admin):
+        return (
+            ('yes', 'Bejelentkezett már'),
+            ('no', 'Még nem jelentkezett be'),
+        )
+    
+    def queryset(self, request, queryset):
+        if self.value() == 'yes':
+            return queryset.filter(last_login__isnull=False)
+        if self.value() == 'no':
+            return queryset.filter(last_login__isnull=True)
+        return queryset
+
+
+# Custom User Admin
+class UserAdmin(BaseUserAdmin):
+    list_display = ['username', 'email', 'first_name', 'last_name', 'last_login', 'is_staff', 'is_active']
+    list_filter = BaseUserAdmin.list_filter + (HasLoggedInFilter,)
+
+
+# Unregister the default User admin and register the custom one
+admin.site.unregister(User)
+admin.site.register(User, UserAdmin)
 
 
 # Profile Admin
