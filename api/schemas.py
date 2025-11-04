@@ -167,6 +167,7 @@ class DiakjaSignleSchema(Schema):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     email: Optional[str] = None
+    last_action: Optional[datetime] = None
     igazolasok: List[IgazolasSimpleSchema]
 
 

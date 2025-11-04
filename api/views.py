@@ -168,6 +168,10 @@ def login(request, data: LoginRequest):
             'detail': 'User account is disabled'
         }
     
+    # Update last_login timestamp
+    user.last_login = timezone.now()
+    user.save(update_fields=['last_login'])
+    
     # Generate JWT token
     token = generate_jwt_token(user)
     
@@ -1196,8 +1200,8 @@ def get_diakjaim(request):
             'detail': 'No class found for this teacher'
         }
     
-    # Get all students in the class
-    students = teacher_class.tanulok.all()
+    # Get all students in the class (prefetch to ensure fresh data)
+    students = teacher_class.tanulok.all().order_by('last_name', 'first_name')
     result = []
     
     for student in students:
@@ -1236,6 +1240,7 @@ def get_diakjaim(request):
             'first_name': student.first_name,
             'last_name': student.last_name,
             'email': student.email,
+            'last_action': student.last_login,
             'igazolasok': igazolasok_data
         }
         result.append(student_data)
