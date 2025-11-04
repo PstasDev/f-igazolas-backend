@@ -168,3 +168,26 @@ BKK_TOKEN = config('BKK_TOKEN', default='')
 
 # FTV External API Configuration
 FTV_EXTERNAL_ACCESS_TOKEN = config('FTV_EXTERNAL_ACCESS_TOKEN', default='')
+
+# Cache Configuration
+# Using LocMemCache for development - consider Redis for production with multiple servers
+# Note: LocMemCache is cleared on server restart. Use Redis or database cache for persistence.
+CACHES = {
+    'default': {
+        # Option 1: In-memory cache (fast but cleared on restart)
+        # 'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        # 'LOCATION': 'unique-snowflake',
+        
+        # Option 2: Database cache (persistent across restarts)
+        'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
+        'LOCATION': 'cache_table',
+        'OPTIONS': {
+            'MAX_ENTRIES': 10000,  # Maximum number of cache entries
+        },
+        
+        # Option 3: Redis cache (best for production, requires redis-py package)
+        # 'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        # 'LOCATION': 'redis://127.0.0.1:6379/1',
+    }
+}
+

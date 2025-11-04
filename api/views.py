@@ -30,7 +30,13 @@ from .schemas import (
 from .jwt_utils import generate_jwt_token, decode_jwt_token
 from .authentication import JWTAuth
 from .email_utils import send_otp_email, send_password_changed_notification
-from .ftv_sync import sync_with_ftv, FTVSyncError, get_cache_metadata
+from .ftv_sync import (
+    sync_user_absences_from_ftv, 
+    sync_class_absences_from_ftv,
+    sync_base_from_ftv,
+    FTVSyncError, 
+    get_cache_metadata
+)
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +221,18 @@ def get_my_profile(request):
         profile = Profile.objects.get(user=request.auth)
         osztaly = profile.osztalyom()
         
+        # Check if user exists in FTV system by email
+        ftv_registered = False
+        if request.auth.email:
+            try:
+                from .ftv_sync import fetch_ftv_profile_by_email
+                ftv_profile = fetch_ftv_profile_by_email(request.auth.email)
+                ftv_registered = ftv_profile is not None
+            except Exception as e:
+                logger.warning(f"Failed to check FTV registration for {request.auth.username}: {str(e)}")
+                # Don't fail the request, just assume not registered
+                ftv_registered = False
+        
         return 200, {
             'id': profile.id,
             'user': {
@@ -229,7 +247,8 @@ def get_my_profile(request):
                 'tagozat': osztaly.tagozat,
                 'kezdes_eve': osztaly.kezdes_eve,
                 'nev': str(osztaly)
-            } if osztaly else None
+            } if osztaly else None,
+            'ftv_registered': ftv_registered  # New field for frontend
         }
     except Profile.DoesNotExist:
         return 404, {
@@ -480,7 +499,7 @@ def toggle_igazolas_tipus_for_osztaly(request, data: ToggleIgazolasTipusRequest)
 # Igazolas Endpoints
 
 @api.get("/igazolas", response={200: List[IgazolasSchema], 401: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
-def list_igazolas(request, mode: str = "live"):
+def list_igazolas(request, mode: str = "live", debug_performance: str = "false"):
     """
     Get all justifications (requires authentication).
     
@@ -490,14 +509,40 @@ def list_igazolas(request, mode: str = "live"):
     Args:
         mode: 'cached' to return stored data without sync (fast), 
               'live' to sync with FTV first (default, slower but fresh)
+        debug_performance: 'true' to fetch and log performance details from FTV backend
     """
+    # Convert debug_performance string to boolean
+    debug_perf = debug_performance.lower() in ('true', '1', 'yes')
+    
+    # Determine if we should print performance (dev mode only)
+    should_print_perf = debug_perf and settings.DEBUG
+    
+    # Get teacher's class
+    teacher_profile = Profile.objects.filter(user=request.auth).first()
+    if not teacher_profile:
+        return 401, {
+            'error': 'Unauthorized',
+            'detail': 'No profile found for user'
+        }
+    
+    teacher_class = teacher_profile.osztalyom()
+    if not teacher_class:
+        return 401, {
+            'error': 'Unauthorized',
+            'detail': 'No class found for this teacher'
+        }
+    
     # Sync with FTV only if mode is 'live'
-    cache_metadata = None
+    sync_result = None
     if mode == "live":
         try:
-            logger.info(f"User {request.auth.username} requested /igazolas - triggering FTV sync")
-            sync_stats = sync_with_ftv()
-            logger.info(f"FTV sync completed: {sync_stats}")
+            logger.info(f"User {request.auth.username} requested /igazolas - triggering class-specific FTV sync")
+            sync_result = sync_class_absences_from_ftv(teacher_class, debug_performance=debug_perf)
+            logger.info(f"FTV sync completed: {sync_result.get('statistics')}")
+            
+            # Print performance details in dev mode
+            if should_print_perf and sync_result.get('ftv_performance'):
+                logger.info(f"FTV Performance Details: {sync_result['ftv_performance']}")
         except FTVSyncError as e:
             logger.error(f"FTV sync failed but continuing with existing data: {str(e)}")
         except Exception as e:
@@ -506,11 +551,11 @@ def list_igazolas(request, mode: str = "live"):
         logger.info(f"User {request.auth.username} requested /igazolas in cached mode - skipping FTV sync")
     
     # Get cache metadata to include in response headers or logging
-    cache_metadata = get_cache_metadata()
+    cache_metadata = get_cache_metadata(f'class_{teacher_class.id}')
     logger.info(f"Cache metadata: {cache_metadata}")
     
     # Fetch igazolások for the teacher's class
-    igazolasok = Profile.objects.filter(user=request.auth).first().osztalyom_igazolasai().select_related('profile', 'tipus').prefetch_related('mulasztasok')
+    igazolasok = teacher_profile.osztalyom_igazolasai().select_related('profile', 'tipus').prefetch_related('mulasztasok')
     result = []
     
     for igazolas in igazolasok:
@@ -559,7 +604,7 @@ def list_igazolas(request, mode: str = "live"):
 
 
 @api.get("/igazolas/my", response={200: List[IgazolasSchema], 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
-def get_my_igazolas(request, mode: str = "live"):
+def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false"):
     """
     Get current user's justifications (requires authentication).
     
@@ -569,14 +614,31 @@ def get_my_igazolas(request, mode: str = "live"):
     Args:
         mode: 'cached' to return stored data without sync (fast), 
               'live' to sync with FTV first (default, slower but fresh)
+        debug_performance: 'true' to fetch and log performance details from FTV backend
     """
-    # Sync with FTV only if mode is 'live'
-    cache_metadata = None
-    if mode == "live":
+    # Convert debug_performance string to boolean
+    debug_perf = debug_performance.lower() in ('true', '1', 'yes')
+    
+    # Determine if we should print performance (dev mode only)
+    should_print_perf = debug_perf and settings.DEBUG
+    
+    # Check if user has email for FTV lookup
+    if not request.auth.email:
+        logger.warning(f"User {request.auth.username} has no email - cannot sync with FTV")
+        # Continue without sync
+        mode = "cached"
+    
+    # Sync with FTV only if mode is 'live' and user has email
+    sync_result = None
+    if mode == "live" and request.auth.email:
         try:
-            logger.info(f"User {request.auth.username} requested /igazolas/my - triggering FTV sync")
-            sync_stats = sync_with_ftv()
-            logger.info(f"FTV sync completed: {sync_stats}")
+            logger.info(f"User {request.auth.username} requested /igazolas/my - triggering user-specific FTV sync")
+            sync_result = sync_user_absences_from_ftv(request.auth, debug_performance=debug_perf)
+            logger.info(f"FTV sync completed: {sync_result.get('statistics')}")
+            
+            # Print performance details in dev mode
+            if should_print_perf and sync_result.get('ftv_performance'):
+                logger.info(f"FTV Performance Details: {sync_result['ftv_performance']}")
         except FTVSyncError as e:
             logger.error(f"FTV sync failed but continuing with existing data: {str(e)}")
         except Exception as e:
@@ -585,7 +647,7 @@ def get_my_igazolas(request, mode: str = "live"):
         logger.info(f"User {request.auth.username} requested /igazolas/my in cached mode - skipping FTV sync")
     
     # Get cache metadata to include in response headers or logging
-    cache_metadata = get_cache_metadata()
+    cache_metadata = get_cache_metadata(f'user_{request.auth.id}')
     logger.info(f"Cache metadata: {cache_metadata}")
     
     try:
@@ -1259,38 +1321,116 @@ def create_diakjaim(request, data: List[DiakjaCreateRequest]):
 
 # FTV Sync Endpoints
 
+@api.get("/sync/ftv/check-registration", response={200: dict}, auth=jwt_auth, tags=["FTV Sync"])
+def check_ftv_registration(request):
+    """
+    Check if the current user is registered in the FTV system.
+    
+    This endpoint is used by the frontend to determine if FTV-related
+    features should be displayed or if sync is possible.
+    
+    Returns:
+        - ftv_registered: bool - Whether user exists in FTV
+        - email: str - User's email (used for FTV lookup)
+        - message: str - Human-readable status message
+    """
+    if not request.auth.email:
+        return 200, {
+            'ftv_registered': False,
+            'email': None,
+            'message': 'User has no email address - cannot check FTV registration'
+        }
+    
+    try:
+        from .ftv_sync import fetch_ftv_profile_by_email
+        ftv_profile = fetch_ftv_profile_by_email(request.auth.email)
+        
+        if ftv_profile:
+            return 200, {
+                'ftv_registered': True,
+                'email': request.auth.email,
+                'ftv_user_id': ftv_profile.get('user_id'),
+                'message': f'User is registered in FTV system (FTV ID: {ftv_profile.get("user_id")})'
+            }
+        else:
+            return 200, {
+                'ftv_registered': False,
+                'email': request.auth.email,
+                'message': 'User is not registered in FTV system - no filming absences available'
+            }
+    except Exception as e:
+        logger.error(f"Error checking FTV registration for {request.auth.username}: {str(e)}")
+        return 200, {
+            'ftv_registered': False,
+            'email': request.auth.email,
+            'message': 'Unable to check FTV registration - FTV API may be unavailable',
+            'error': str(e)
+        }
+
+
 @api.get("/sync/ftv/metadata", response={200: dict}, auth=jwt_auth, tags=["FTV Sync"])
-def get_ftv_sync_metadata(request):
+def get_ftv_sync_metadata(request, sync_type: str = "base"):
     """
     Get FTV sync metadata (last sync time, status, etc.).
     
     This endpoint returns information about the last FTV sync without triggering a new sync.
     Useful for the frontend to display cache freshness information.
+    
+    Args:
+        sync_type: Type of sync to check - 'base', 'user', or 'class' (default: 'base')
+                   For 'user' type, returns metadata for the current user
+                   For 'class' type, returns metadata for the current user's class
     """
-    metadata = get_cache_metadata()
+    # Determine the actual sync_type based on the user
+    if sync_type == 'user':
+        actual_sync_type = f'user_{request.auth.id}'
+    elif sync_type == 'class':
+        teacher_profile = Profile.objects.filter(user=request.auth).first()
+        if teacher_profile and teacher_profile.osztalyom():
+            actual_sync_type = f'class_{teacher_profile.osztalyom().id}'
+        else:
+            actual_sync_type = 'base'
+    else:
+        actual_sync_type = 'base'
+    
+    metadata = get_cache_metadata(actual_sync_type)
     return 200, {
         'success': True,
+        'sync_type': sync_type,
         'metadata': metadata
     }
 
 
 @api.post("/sync/ftv", response={200: dict, 500: ErrorResponse}, auth=jwt_auth, tags=["FTV Sync"])
-def manual_ftv_sync(request):
+def manual_ftv_sync(request, debug_performance: str = "false"):
     """
-    Manually trigger FTV sync (requires authentication).
+    Manually trigger FTV base sync (requires authentication).
     
-    This endpoint can be called by admins to force a sync with FTV.
-    Normally, sync happens automatically when /igazolas or /igazolas/my is called with mode=live.
+    This endpoint performs a lightweight base sync (classes + students only).
+    For full sync with absences, the system will use user-specific or class-specific endpoints.
+    
+    Args:
+        debug_performance: 'true' to fetch and log performance details from FTV backend
     """
+    # Convert debug_performance string to boolean
+    debug_perf = debug_performance.lower() in ('true', '1', 'yes')
+    
+    # Determine if we should print performance (dev mode only)
+    should_print_perf = debug_perf and settings.DEBUG
+    
     try:
-        logger.info(f"Manual FTV sync triggered by user {request.auth.username}")
-        sync_stats = sync_with_ftv()
+        logger.info(f"Manual FTV base sync triggered by user {request.auth.username}")
+        sync_result = sync_base_from_ftv(debug_performance=debug_perf)
+        
+        # Print performance details in dev mode
+        if should_print_perf and sync_result.get('ftv_performance'):
+            logger.info(f"FTV Performance Details: {sync_result['ftv_performance']}")
         
         return 200, {
             'success': True,
-            'message': 'FTV sync completed successfully',
-            'statistics': sync_stats,
-            'metadata': get_cache_metadata()
+            'message': 'FTV base sync completed successfully',
+            'statistics': sync_result.get('statistics'),
+            'metadata': get_cache_metadata('base')
         }
     except FTVSyncError as e:
         logger.error(f"Manual FTV sync failed: {str(e)}")

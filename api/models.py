@@ -217,36 +217,56 @@ class ForgotPasswordToken(models.Model):
         ordering = ['-created_at']
 
 
-# FTV Sync Metadata
-
 class FTVSyncMetadata(models.Model):
     """
-    Model to store FTV sync metadata for cache management.
-    Only one record should exist (singleton pattern).
+    Model to store FTV sync metadata for tracking sync status.
+    Each sync type (base, user_{id}, class_{id}) has its own record.
     """
+    sync_type = models.CharField(max_length=100, unique=True)  # 'base', 'user_{id}', 'class_{id}'
     last_sync_time = models.DateTimeField(null=True, blank=True)
     last_sync_status = models.CharField(max_length=20, default='never')  # 'success', 'failed', 'never'
     last_sync_stats = models.JSONField(null=True, blank=True)  # Store sync statistics
     
     @classmethod
-    def get_instance(cls):
-        """Get or create the singleton instance"""
-        instance, _ = cls.objects.get_or_create(pk=1)
-        return instance
+    def get_or_create_metadata(cls, sync_type: str):
+        """Get or create metadata for a sync type"""
+        obj, created = cls.objects.get_or_create(sync_type=sync_type)
+        return obj
     
     @classmethod
-    def update_sync(cls, status: str, stats: dict = None):
+    def update_sync(cls, sync_type: str, status: str, stats: dict = None):
         """Update sync metadata"""
-        instance = cls.get_instance()
-        instance.last_sync_time = timezone.now()
-        instance.last_sync_status = status
+        obj = cls.get_or_create_metadata(sync_type)
+        obj.last_sync_time = timezone.now()
+        obj.last_sync_status = status
         if stats:
-            instance.last_sync_stats = stats
-        instance.save()
-        return instance
+            obj.last_sync_stats = stats
+        obj.save()
+        return obj
+    
+    @classmethod
+    def get_metadata(cls, sync_type: str) -> dict:
+        """Get metadata as dictionary"""
+        obj = cls.get_or_create_metadata(sync_type)
+        result = {
+            'last_sync_time': obj.last_sync_time.isoformat() if obj.last_sync_time else None,
+            'last_sync_status': obj.last_sync_status,
+            'last_sync_stats': obj.last_sync_stats
+        }
+        
+        # Calculate age
+        if obj.last_sync_time:
+            age_seconds = (timezone.now() - obj.last_sync_time).total_seconds()
+            result['sync_age_seconds'] = int(age_seconds)
+            result['sync_age_minutes'] = round(age_seconds / 60, 1)
+        else:
+            result['sync_age_seconds'] = None
+            result['sync_age_minutes'] = None
+        
+        return result
     
     def __str__(self):
-        return f"FTV Sync Metadata - Last sync: {self.last_sync_time or 'Never'}"
+        return f"FTV Sync Metadata [{self.sync_type}] - Last sync: {self.last_sync_time or 'Never'}"
     
     class Meta:
         verbose_name = 'FTV Sync Metadata'
