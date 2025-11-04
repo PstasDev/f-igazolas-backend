@@ -226,3 +226,17 @@ class ToggleIgazolasTipusResponse(Schema):
     success: bool
     tipus_id: int
     enabled: bool
+
+
+# System Message schemas
+class SystemMessageSchema(Schema):
+    id: int
+    title: str
+    message: str
+    severity: str
+    messageType: str
+    showFrom: datetime
+    showTo: datetime
+    created_at: datetime
+    updated_at: datetime
+    is_active: bool

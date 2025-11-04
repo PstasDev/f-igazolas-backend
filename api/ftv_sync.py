@@ -544,12 +544,26 @@ def sync_user_absences_from_ftv(user: User, debug_performance: bool = False) -> 
         else:
             ftv_absences = response_data
         
-        # Get user's osztaly for sync_or_create_user function
-        osztaly = profile.osztalyom()
-        
+        # Process each absence record
         for ftv_absence in ftv_absences:
             try:
                 with transaction.atomic():
+                    # Extract and sync class information from FTV absence data
+                    if 'osztaly' in ftv_absence and ftv_absence['osztaly']:
+                        # FTV sends class info in absence - sync it
+                        ftv_osztaly_data = ftv_absence['osztaly']
+                        osztaly = sync_or_create_osztaly(ftv_osztaly_data)
+                        
+                        # Ensure user is in the correct class
+                        sync_or_create_user(ftv_absence, osztaly)
+                    else:
+                        # Fallback: use user's current class
+                        osztaly = profile.osztalyom()
+                        if not osztaly:
+                            logger.warning(f"User {user.username} has no class and FTV absence {ftv_absence.get('id')} has no class data - skipping")
+                            stats['errors'] += 1
+                            continue
+                    
                     # Sync absence record
                     igazolas = sync_ftv_absence(ftv_absence, user, ftv_tipus)
                     synced_ftv_ids.append(ftv_absence['id'])
@@ -563,6 +577,8 @@ def sync_user_absences_from_ftv(user: User, debug_performance: bool = False) -> 
             except Exception as e:
                 stats['errors'] += 1
                 logger.error(f"Error syncing absence {ftv_absence.get('id')} for user {user.username}: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
                 continue
         
         # Delete obsolete records for this user

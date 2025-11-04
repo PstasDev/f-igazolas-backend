@@ -14,7 +14,7 @@ import requests
 
 from .models import (
     Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas,
-    PasswordResetOTP, ForgotPasswordToken
+    PasswordResetOTP, ForgotPasswordToken, SystemMessage
 )
 from .schemas import (
     LoginRequest, TokenResponse, ErrorResponse,
@@ -25,7 +25,8 @@ from .schemas import (
     TeacherCommentUpdateResponse, DiakjaSignleSchema, DiakjaCreateRequest, 
     DiakjaCreateResponse, ForgotPasswordRequest, ForgotPasswordResponse,
     CheckOTPRequest, CheckOTPResponse, ChangePasswordOTPRequest,
-    ChangePasswordOTPResponse, ToggleIgazolasTipusRequest, ToggleIgazolasTipusResponse
+    ChangePasswordOTPResponse, ToggleIgazolasTipusRequest, ToggleIgazolasTipusResponse,
+    SystemMessageSchema
 )
 from .jwt_utils import generate_jwt_token, decode_jwt_token
 from .authentication import JWTAuth
@@ -1449,3 +1450,61 @@ def manual_ftv_sync(request, debug_performance: str = "false"):
             'error': 'Server error',
             'detail': 'An unexpected error occurred during sync'
         }
+
+
+# ============================================================================
+# System Messages Endpoints (No Authentication Required)
+# ============================================================================
+
+@api.get("/system-messages", response={200: List[SystemMessageSchema]}, auth=None, tags=["System Messages"])
+def get_all_system_messages(request):
+    """
+    Get all system messages (no authentication required).
+    
+    Returns all system messages regardless of their display time window.
+    Useful for admin/debugging purposes.
+    """
+    messages = SystemMessage.objects.all()
+    
+    return 200, [
+        {
+            'id': msg.id,
+            'title': msg.title,
+            'message': msg.message,
+            'severity': msg.severity,
+            'messageType': msg.messageType,
+            'showFrom': msg.showFrom,
+            'showTo': msg.showTo,
+            'created_at': msg.created_at,
+            'updated_at': msg.updated_at,
+            'is_active': msg.is_active()
+        }
+        for msg in messages
+    ]
+
+
+@api.get("/system-messages/active", response={200: List[SystemMessageSchema]}, auth=None, tags=["System Messages"])
+def get_active_system_messages(request):
+    """
+    Get currently active system messages (no authentication required).
+    
+    Returns only system messages that should be displayed right now
+    (current time is between showFrom and showTo).
+    """
+    active_messages = SystemMessage.get_active_messages()
+    
+    return 200, [
+        {
+            'id': msg.id,
+            'title': msg.title,
+            'message': msg.message,
+            'severity': msg.severity,
+            'messageType': msg.messageType,
+            'showFrom': msg.showFrom,
+            'showTo': msg.showTo,
+            'created_at': msg.created_at,
+            'updated_at': msg.updated_at,
+            'is_active': True  # All messages returned here are active
+        }
+        for msg in active_messages
+    ]

@@ -3,7 +3,7 @@ from django.contrib.auth.models import User, Group
 from django.utils import timezone
 import pyotp
 import secrets
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 # User modellek
 
@@ -271,3 +271,77 @@ class FTVSyncMetadata(models.Model):
     class Meta:
         verbose_name = 'FTV Sync Metadata'
         verbose_name_plural = 'FTV Sync Metadata'
+
+
+class SystemMessage(models.Model):
+    """
+    Model to store system messages for displaying announcements, warnings, and errors to users.
+    """
+    # Severity choices
+    SEVERITY_INFO = 'info'
+    SEVERITY_WARNING = 'warning'
+    SEVERITY_ERROR = 'error'
+    
+    SEVERITY_CHOICES = [
+        (SEVERITY_INFO, 'Információ'),
+        (SEVERITY_WARNING, 'Figyelmeztetés'),
+        (SEVERITY_ERROR, 'Hiba'),
+    ]
+    
+    # Message type choices
+    MESSAGE_TYPE_USER = 'user'
+    MESSAGE_TYPE_DEVELOPER = 'developer'
+    MESSAGE_TYPE_OPERATOR = 'operator'
+    MESSAGE_TYPE_SUPPORT = 'support'
+    
+    MESSAGE_TYPE_CHOICES = [
+        (MESSAGE_TYPE_USER, 'Felhasználó'),
+        (MESSAGE_TYPE_DEVELOPER, 'Fejlesztő'),
+        (MESSAGE_TYPE_OPERATOR, 'Operátor'),
+        (MESSAGE_TYPE_SUPPORT, 'Támogatás'),
+    ]
+    
+    title = models.CharField(max_length=200, blank=False, null=False, verbose_name='Cím', 
+                            help_text='A rendszerüzenet címe (maximum 200 karakter)')
+    message = models.TextField(max_length=2000, blank=False, null=False, verbose_name='Üzenet', 
+                              help_text='A rendszerüzenet tartalma (maximum 2000 karakter)')
+    severity = models.CharField(max_length=20, choices=SEVERITY_CHOICES, default=SEVERITY_INFO, 
+                               verbose_name='Súlyosság', 
+                               help_text='Az üzenet súlyossága (info/warning/error)')
+    messageType = models.CharField(max_length=20, choices=MESSAGE_TYPE_CHOICES, default=MESSAGE_TYPE_USER,
+                                  verbose_name='Üzenet típusa',
+                                  help_text='Az üzenet célközönsége (user/developer/operator/support)')
+    showFrom = models.DateTimeField(blank=False, null=False, verbose_name='Megjelenítés kezdete', 
+                                   help_text='Az üzenet megjelenítésének kezdő időpontja')
+    showTo = models.DateTimeField(blank=False, null=False, verbose_name='Megjelenítés vége', 
+                                 help_text='Az üzenet megjelenítésének záró időpontja')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Létrehozva', 
+                                     help_text='A rendszerüzenet létrehozásának időpontja')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Módosítva', 
+                                     help_text='A rendszerüzenet utolsó módosításának időpontja')
+
+    def __str__(self):
+        return self.title
+    
+    @classmethod
+    def get_active_messages(cls, check_datetime=None):
+        """Get all system messages that should be displayed at the given datetime (default: now)"""
+        if check_datetime is None:
+            check_datetime = datetime.now()
+        
+        return cls.objects.filter(
+            showFrom__lte=check_datetime,
+            showTo__gte=check_datetime
+        ).order_by('showFrom')
+    
+    def is_active(self, check_datetime=None):
+        """Check if this message should be displayed at the given datetime (default: now)"""
+        if check_datetime is None:
+            check_datetime = datetime.now()
+        
+        return self.showFrom <= check_datetime <= self.showTo
+    
+    class Meta:
+        verbose_name = "Rendszerüzenet"
+        verbose_name_plural = "Rendszerüzenetek"
+        ordering = ['-showFrom']

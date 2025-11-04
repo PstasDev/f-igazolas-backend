@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
-from .models import Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas
+from .models import Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas, SystemMessage
 
 
 # Custom filter for last_login that excludes nulls
@@ -27,6 +27,17 @@ class HasLoggedInFilter(admin.SimpleListFilter):
 class UserAdmin(BaseUserAdmin):
     list_display = ['username', 'email', 'first_name', 'last_name', 'last_login', 'is_staff', 'is_active']
     list_filter = BaseUserAdmin.list_filter + (HasLoggedInFilter,)
+    actions = ['flip_first_last_name']
+    
+    @admin.action(description='Keresztnév és vezetéknév felcserélése')
+    def flip_first_last_name(self, request, queryset):
+        """Flip first_name and last_name for selected users"""
+        updated_count = 0
+        for user in queryset:
+            user.first_name, user.last_name = user.last_name, user.first_name
+            user.save()
+            updated_count += 1
+        self.message_user(request, f'{updated_count} felhasználó neve felcserélve.')
 
 
 # Unregister the default User admin and register the custom one
@@ -86,7 +97,7 @@ class IgazolasTipusAdmin(admin.ModelAdmin):
 # Igazolas Admin
 @admin.register(Igazolas)
 class IgazolasAdmin(admin.ModelAdmin):
-    list_display = ['id', 'get_student', 'get_osztaly', 'eleje', 'vege', 'tipus', 'allapot', 'diak', 'ftv', 'korrigalt', 'rogzites_datuma']
+    list_display = ['id', 'get_student', 'get_osztaly', 'eleje', 'vege', 'tipus', 'allapot', 'get_megjegyzes_diak', 'diak', 'ftv', 'korrigalt', 'rogzites_datuma']
     list_filter = ['allapot', 'diak', 'ftv', 'korrigalt', 'kretaban_rogzitettem', 'tipus', 'rogzites_datuma']
     search_fields = ['profile__user__username', 'profile__user__first_name', 'profile__user__last_name', 'megjegyzes_diak', 'megjegyzes_tanar']
     date_hierarchy = 'rogzites_datuma'
@@ -125,3 +136,39 @@ class IgazolasAdmin(admin.ModelAdmin):
         osztaly = obj.profile.osztalyom()
         return str(osztaly) if osztaly else '-'
     get_osztaly.short_description = 'Osztály'
+    
+    def get_megjegyzes_diak(self, obj):
+        if obj.megjegyzes_diak:
+            # Truncate to 50 chars for table display
+            return obj.megjegyzes_diak[:50] + '...' if len(obj.megjegyzes_diak) > 50 else obj.megjegyzes_diak
+        return '-'
+    get_megjegyzes_diak.short_description = 'Indoklás'
+
+
+# SystemMessage Admin
+@admin.register(SystemMessage)
+class SystemMessageAdmin(admin.ModelAdmin):
+    list_display = ['id', 'title', 'severity', 'messageType', 'showFrom', 'showTo', 'is_currently_active', 'created_at']
+    list_filter = ['severity', 'messageType', 'showFrom', 'showTo', 'created_at']
+    search_fields = ['title', 'message']
+    date_hierarchy = 'showFrom'
+    ordering = ['-showFrom']
+    readonly_fields = ['created_at', 'updated_at']
+    
+    fieldsets = (
+        ('Üzenet tartalma', {
+            'fields': ('title', 'message', 'severity', 'messageType')
+        }),
+        ('Megjelenítés időzítése', {
+            'fields': ('showFrom', 'showTo')
+        }),
+        ('Metaadatok', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def is_currently_active(self, obj):
+        return obj.is_active()
+    is_currently_active.boolean = True
+    is_currently_active.short_description = 'Aktív'
