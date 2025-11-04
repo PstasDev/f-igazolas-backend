@@ -77,7 +77,10 @@ def get_ftv_headers() -> Dict[str, str]:
     """Get headers for FTV API requests"""
     token = settings.FTV_EXTERNAL_ACCESS_TOKEN
     if not token:
+        print(f"❌ ERROR: FTV_EXTERNAL_ACCESS_TOKEN not configured in settings!")
         raise FTVSyncError("FTV_EXTERNAL_ACCESS_TOKEN not configured")
+    
+    print(f"   🔑 Using FTV token: ***{token[-10:]}***")
     
     return {
         'Authorization': f'Bearer {token}',
@@ -128,16 +131,40 @@ def fetch_ftv_user_absences(user_id: int, debug_performance: bool = False) -> Li
         params = {}
         if debug_performance:
             params['debug-performance'] = 'true'
-            
+        
+        url = f"{FTV_BASE_URL}/hianyzasok/user/{user_id}"
+        print(f"   📡 FTV API Request:")
+        print(f"      URL: {url}")
+        print(f"      Params: {params}")
+        print(f"      Headers: Authorization=Bearer ***{settings.FTV_EXTERNAL_ACCESS_TOKEN[-10:] if settings.FTV_EXTERNAL_ACCESS_TOKEN else 'NOT SET'}***")
+        
         response = requests.get(
-            f"{FTV_BASE_URL}/hianyzasok/user/{user_id}",
+            url,
             headers=get_ftv_headers(),
             params=params,
             timeout=30
         )
+        
+        print(f"   📡 FTV API Response:")
+        print(f"      Status Code: {response.status_code}")
+        print(f"      Content-Type: {response.headers.get('Content-Type', 'unknown')}")
+        print(f"      Response Length: {len(response.content)} bytes")
+        
         response.raise_for_status()
-        return response.json()
+        
+        json_data = response.json()
+        print(f"      JSON Keys: {list(json_data.keys()) if isinstance(json_data, dict) else 'list'}")
+        if isinstance(json_data, list):
+            print(f"      List Length: {len(json_data)}")
+        elif isinstance(json_data, dict) and 'data' in json_data:
+            print(f"      Data Length: {len(json_data.get('data', []))}")
+        
+        return json_data
     except requests.RequestException as e:
+        print(f"   ✗ FTV API ERROR: {str(e)}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"      Response Status: {e.response.status_code}")
+            print(f"      Response Body: {e.response.text[:500]}")
         logger.error(f"Error fetching FTV absences for user {user_id}: {str(e)}")
         raise FTVSyncError(f"Failed to fetch FTV user absences: {str(e)}")
 
@@ -182,16 +209,28 @@ def fetch_ftv_profile_by_email(email: str) -> Optional[Dict]:
         User profile dict with user_id, or None if not found
     """
     try:
+        url = f"{FTV_BASE_URL}/profile/{email}"
+        print(f"   📡 FTV Profile Request:")
+        print(f"      URL: {url}")
+        
         response = requests.get(
-            f"{FTV_BASE_URL}/profile/{email}",
+            url,
             headers=get_ftv_headers(),
             timeout=30
         )
+        
+        print(f"      Status: {response.status_code}")
+        
         if response.status_code == 404:
+            print(f"      Result: User not found (404)")
             return None
+            
         response.raise_for_status()
-        return response.json()
+        profile_data = response.json()
+        print(f"      Result: {profile_data}")
+        return profile_data
     except requests.RequestException as e:
+        print(f"   ✗ FTV Profile ERROR: {str(e)}")
         logger.error(f"Error fetching FTV profile for {email}: {str(e)}")
         return None
 
@@ -486,6 +525,12 @@ def sync_user_absences_from_ftv(user: User, debug_performance: bool = False) -> 
     Returns:
         Dict with sync statistics and optional performance data
     """
+    print(f"\n{'='*80}")
+    print(f"🔄 STARTING USER FTV SYNC")
+    print(f"   User: {user.username} ({user.email})")
+    print(f"   Debug Performance: {debug_performance}")
+    print(f"{'='*80}\n")
+    
     stats = {
         'igazolasok_created': 0,
         'igazolasok_updated': 0,
@@ -498,25 +543,35 @@ def sync_user_absences_from_ftv(user: User, debug_performance: bool = False) -> 
     
     try:
         # Get FTV igazolás tipus
+        print(f"📋 Getting or creating FTV igazolás tipus...")
         ftv_tipus = get_or_create_ftv_igazolas_tipus()
+        print(f"   ✓ FTV tipus: {ftv_tipus.nev} (ID: {ftv_tipus.id})\n")
         
         # Get user's profile
+        print(f"👤 Checking user profile...")
         try:
             profile = Profile.objects.get(user=user)
+            print(f"   ✓ Profile found: ID={profile.id}\n")
         except Profile.DoesNotExist:
+            print(f"   ⚠ No profile found, creating one...")
             logger.warning(f"No profile found for user {user.username}, creating one")
             profile = Profile.objects.create(user=user)
+            print(f"   ✓ Profile created: ID={profile.id}\n")
         
         # Check if user has email
         if not user.email:
+            print(f"   ✗ ERROR: User has no email address!\n")
             logger.error(f"User {user.username} has no email address - cannot sync with FTV")
             raise FTVSyncError(f"User {user.username} has no email address for FTV lookup")
         
         # Fetch user profile from FTV by email to get FTV user ID
+        print(f"🌐 Fetching FTV profile by email: {user.email}")
         logger.info(f"Fetching FTV profile for user {user.username} ({user.email})...")
         try:
             ftv_profile = fetch_ftv_profile_by_email(user.email)
             if not ftv_profile:
+                print(f"   ⚠ User NOT found in FTV system")
+                print(f"   → Returning empty stats (user not registered in FTV)\n")
                 logger.warning(f"User {user.username} ({user.email}) not found in FTV system - no absences to sync")
                 # No error, just return empty stats with flag (user might not be in FTV yet)
                 result = {
@@ -525,15 +580,22 @@ def sync_user_absences_from_ftv(user: User, debug_performance: bool = False) -> 
                     'message': 'User not registered in FTV system'
                 }
                 update_cache_metadata(f'user_{user.id}', 'success', stats)
+                print(f"{'='*80}")
+                print(f"✓ SYNC COMPLETED (user not in FTV)")
+                print(f"{'='*80}\n")
                 return result
             
             ftv_user_id = ftv_profile['user_id']
+            print(f"   ✓ Found FTV user ID: {ftv_user_id}\n")
             logger.info(f"Found FTV user ID {ftv_user_id} for {user.username}")
         except Exception as e:
+            print(f"   ✗ ERROR fetching FTV profile: {str(e)}\n")
             logger.error(f"Failed to fetch FTV profile for {user.email}: {str(e)}")
             raise FTVSyncError(f"Failed to fetch FTV profile: {str(e)}")
         
         # Fetch absences for this user
+        print(f"📥 Fetching absences from FTV API...")
+        print(f"   Endpoint: {FTV_BASE_URL}/hianyzasok/user/{ftv_user_id}")
         logger.info(f"Fetching absences for user {user.username} (FTV ID: {ftv_user_id})...")
         response_data = fetch_ftv_user_absences(ftv_user_id, debug_performance)
         
@@ -541,61 +603,92 @@ def sync_user_absences_from_ftv(user: User, debug_performance: bool = False) -> 
         if isinstance(response_data, dict) and 'data' in response_data:
             ftv_absences = response_data['data']
             ftv_performance = response_data.get('performance')
+            print(f"   ✓ Received {len(ftv_absences)} absence records (with performance data)")
         else:
             ftv_absences = response_data
+            print(f"   ✓ Received {len(ftv_absences)} absence records")
+        
+        if ftv_performance:
+            print(f"   📊 Performance: {ftv_performance}")
+        print()
         
         # Process each absence record
-        for ftv_absence in ftv_absences:
+        print(f"🔄 Processing {len(ftv_absences)} absence records...")
+        for idx, ftv_absence in enumerate(ftv_absences, 1):
+            absence_id = ftv_absence.get('id', 'unknown')
+            print(f"\n   [{idx}/{len(ftv_absences)}] Processing absence ID: {absence_id}")
             try:
                 with transaction.atomic():
                     # Extract and sync class information from FTV absence data
                     if 'osztaly' in ftv_absence and ftv_absence['osztaly']:
                         # FTV sends class info in absence - sync it
                         ftv_osztaly_data = ftv_absence['osztaly']
+                        print(f"      → Class data: {ftv_osztaly_data.get('startYear')}/{ftv_osztaly_data.get('szekcio')}")
                         osztaly = sync_or_create_osztaly(ftv_osztaly_data)
+                        print(f"      → Osztaly: {osztaly}")
                         
                         # Ensure user is in the correct class
                         sync_or_create_user(ftv_absence, osztaly)
+                        print(f"      → User synced to class")
                     else:
                         # Fallback: use user's current class
                         osztaly = profile.osztalyom()
                         if not osztaly:
+                            print(f"      ✗ ERROR: User has no class and absence has no class data - SKIPPING")
                             logger.warning(f"User {user.username} has no class and FTV absence {ftv_absence.get('id')} has no class data - skipping")
                             stats['errors'] += 1
                             continue
+                        print(f"      → Using user's current class: {osztaly}")
                     
                     # Sync absence record
+                    print(f"      → Syncing absence record...")
                     igazolas = sync_ftv_absence(ftv_absence, user, ftv_tipus)
                     synced_ftv_ids.append(ftv_absence['id'])
                     
                     # Check if it was an update or create
                     if Igazolas.objects.filter(ftv_hianyzas_id=ftv_absence['id']).count() > 1:
                         stats['igazolasok_updated'] += 1
+                        print(f"      ✓ UPDATED igazolás #{igazolas.id}")
                     else:
                         stats['igazolasok_created'] += 1
+                        print(f"      ✓ CREATED igazolás #{igazolas.id}")
                     
             except Exception as e:
                 stats['errors'] += 1
+                print(f"      ✗ ERROR: {str(e)}")
                 logger.error(f"Error syncing absence {ftv_absence.get('id')} for user {user.username}: {str(e)}")
                 import traceback
+                traceback.print_exc()
                 logger.error(traceback.format_exc())
                 continue
         
         # Delete obsolete records for this user
+        print(f"\n🗑️  Cleaning up obsolete records...")
         try:
             with transaction.atomic():
                 obsolete_count = Igazolas.objects.filter(
                     ftv=True, 
                     profile__user=user
                 ).exclude(ftv_hianyzas_id__in=synced_ftv_ids).count()
+                print(f"   → Found {obsolete_count} obsolete records")
                 delete_obsolete_ftv_records(synced_ftv_ids, user=user)
                 stats['igazolasok_deleted'] = obsolete_count
+                print(f"   ✓ Deleted {obsolete_count} obsolete records\n")
         except Exception as e:
+            print(f"   ✗ ERROR cleaning up: {str(e)}\n")
             logger.error(f"Error cleaning up obsolete records for user {user.username}: {str(e)}")
+        
+        print(f"📊 SYNC STATISTICS:")
+        print(f"   Created: {stats['igazolasok_created']}")
+        print(f"   Updated: {stats['igazolasok_updated']}")
+        print(f"   Deleted: {stats['igazolasok_deleted']}")
+        print(f"   Errors: {stats['errors']}")
+        print()
         
         logger.info(f"User sync completed for {user.username}: {stats}")
         
         # Update cache metadata
+        print(f"💾 Updating cache metadata...")
         update_cache_metadata(f'user_{user.id}', 'success', stats)
         
         result = {
@@ -605,13 +698,25 @@ def sync_user_absences_from_ftv(user: User, debug_performance: bool = False) -> 
         if ftv_performance and debug_performance:
             result['ftv_performance'] = ftv_performance
         
+        print(f"{'='*80}")
+        print(f"✅ USER FTV SYNC COMPLETED SUCCESSFULLY")
+        print(f"{'='*80}\n")
+        
         return result
         
     except FTVSyncError as e:
+        print(f"\n{'='*80}")
+        print(f"❌ FTV SYNC ERROR: {str(e)}")
+        print(f"{'='*80}\n")
         logger.error(f"FTV user sync failed for {user.username}: {str(e)}")
         update_cache_metadata(f'user_{user.id}', 'failed', stats)
         raise
     except Exception as e:
+        print(f"\n{'='*80}")
+        print(f"❌ UNEXPECTED ERROR: {str(e)}")
+        print(f"{'='*80}\n")
+        import traceback
+        traceback.print_exc()
         logger.error(f"Unexpected error during FTV user sync for {user.username}: {str(e)}")
         update_cache_metadata(f'user_{user.id}', 'failed', stats)
         raise FTVSyncError(f"User sync failed: {str(e)}")

@@ -621,6 +621,14 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
               'live' to sync with FTV first (default, slower but fresh)
         debug_performance: 'true' to fetch and log performance details from FTV backend
     """
+    print(f"\n{'='*100}")
+    print(f"🌐 API ENDPOINT: /igazolas/my")
+    print(f"   User: {request.auth.username} (ID: {request.auth.id})")
+    print(f"   Email: {request.auth.email}")
+    print(f"   Mode: {mode}")
+    print(f"   Debug Performance: {debug_performance}")
+    print(f"{'='*100}\n")
+    
     # Convert debug_performance string to boolean
     debug_perf = debug_performance.lower() in ('true', '1', 'yes')
     
@@ -629,6 +637,8 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
     
     # Check if user has email for FTV lookup
     if not request.auth.email:
+        print(f"⚠️  WARNING: User has no email - cannot sync with FTV")
+        print(f"   → Switching to 'cached' mode\n")
         logger.warning(f"User {request.auth.username} has no email - cannot sync with FTV")
         # Continue without sync
         mode = "cached"
@@ -636,20 +646,33 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
     # Sync with FTV only if mode is 'live' and user has email
     sync_result = None
     if mode == "live" and request.auth.email:
+        print(f"🔄 MODE=LIVE: Triggering FTV sync...")
         try:
             logger.info(f"User {request.auth.username} requested /igazolas/my - triggering user-specific FTV sync")
             sync_result = sync_user_absences_from_ftv(request.auth, debug_performance=debug_perf)
+            print(f"✅ FTV Sync completed successfully")
+            print(f"   Stats: {sync_result.get('statistics')}\n")
             logger.info(f"FTV sync completed: {sync_result.get('statistics')}")
             
             # Print performance details in dev mode
             if should_print_perf and sync_result.get('ftv_performance'):
+                print(f"📊 Performance Details: {sync_result['ftv_performance']}\n")
                 logger.info(f"FTV Performance Details: {sync_result['ftv_performance']}")
         except FTVSyncError as e:
+            print(f"❌ FTV sync failed: {str(e)}")
+            print(f"   → Continuing with existing data\n")
             logger.error(f"FTV sync failed but continuing with existing data: {str(e)}")
         except Exception as e:
+            print(f"❌ Unexpected error during FTV sync: {str(e)}")
+            print(f"   → Continuing with existing data\n")
+            import traceback
+            traceback.print_exc()
             logger.error(f"Unexpected error during FTV sync: {str(e)}")
-    else:
+    elif mode == "cached":
+        print(f"💾 MODE=CACHED: Skipping FTV sync\n")
         logger.info(f"User {request.auth.username} requested /igazolas/my in cached mode - skipping FTV sync")
+    else:
+        print(f"⚠️  No sync triggered (mode={mode}, has_email={bool(request.auth.email)})\n")
     
     # Get cache metadata to include in response headers or logging
     cache_metadata = get_cache_metadata(f'user_{request.auth.id}')
@@ -699,6 +722,15 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
                 'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
             }
             result.append(igazolas_data)
+        
+        print(f"📤 RESPONSE DATA:")
+        print(f"   Total igazolások: {len(result)}")
+        ftv_count = sum(1 for i in result if i.get('ftv'))
+        print(f"   FTV igazolások: {ftv_count}")
+        print(f"   Non-FTV igazolások: {len(result) - ftv_count}")
+        if result:
+            print(f"   Sample (first record): eleje={result[0].get('eleje')}, vege={result[0].get('vege')}, ftv={result[0].get('ftv')}")
+        print(f"{'='*100}\n")
         
         return 200, result
     except Profile.DoesNotExist:
