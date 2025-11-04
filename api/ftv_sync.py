@@ -169,59 +169,6 @@ def fetch_ftv_user_absences(user_id: int, debug_performance: bool = False) -> Li
         raise FTVSyncError(f"Failed to fetch FTV user absences: {str(e)}")
 
 
-def fetch_ftv_class_absences(osztaly_id: int, debug_performance: bool = False) -> List[Dict]:
-    """
-    Fetch all absences for a specific class from FTV.
-    
-    Args:
-        osztaly_id: The FTV osztaly ID
-        debug_performance: Whether to request performance data from FTV
-    
-    Returns:
-        List of absence records, or dict with 'data' and 'performance' if debug enabled
-    """
-    try:
-        params = {}
-        if debug_performance:
-            params['debug-performance'] = 'true'
-        
-        url = f"{FTV_BASE_URL}/hianyzasok/osztaly/{osztaly_id}"
-        print(f"   📡 FTV API Request:")
-        print(f"      URL: {url}")
-        print(f"      Params: {params}")
-        print(f"      Headers: Authorization=Bearer ***{settings.FTV_EXTERNAL_ACCESS_TOKEN[-10:] if settings.FTV_EXTERNAL_ACCESS_TOKEN else 'NOT SET'}***")
-        
-        response = requests.get(
-            url,
-            headers=get_ftv_headers(),
-            params=params,
-            timeout=30
-        )
-        
-        print(f"   📡 FTV API Response:")
-        print(f"      Status Code: {response.status_code}")
-        print(f"      Content-Type: {response.headers.get('Content-Type', 'unknown')}")
-        print(f"      Response Length: {len(response.content)} bytes")
-        
-        response.raise_for_status()
-        
-        json_data = response.json()
-        print(f"      JSON Keys: {list(json_data.keys()) if isinstance(json_data, dict) else 'list'}")
-        if isinstance(json_data, list):
-            print(f"      List Length: {len(json_data)}")
-        elif isinstance(json_data, dict) and 'data' in json_data:
-            print(f"      Data Length: {len(json_data.get('data', []))}")
-        
-        return json_data
-    except requests.RequestException as e:
-        print(f"   ✗ FTV API ERROR: {str(e)}")
-        if hasattr(e, 'response') and e.response is not None:
-            print(f"      Response Status: {e.response.status_code}")
-            print(f"      Response Body: {e.response.text[:500]}")
-        logger.error(f"Error fetching FTV absences for class {osztaly_id}: {str(e)}")
-        raise FTVSyncError(f"Failed to fetch FTV class absences: {str(e)}")
-
-
 def fetch_ftv_class_absences_by_year_szekcio(start_year: int, szekcio: str, debug_performance: bool = False) -> List[Dict]:
     """
     Fetch all absences for a specific class from FTV using startYear and szekcio.
@@ -847,26 +794,12 @@ def sync_class_absences_from_ftv(osztaly: Osztaly, debug_performance: bool = Fal
         print(f"   FTV start year: {ftv_start_year}")
         print(f"   tagozat/szekcio: {osztaly.tagozat}\n")
         
-        # First, try to fetch by startYear and szekcio (the correct method)
-        print(f"📥 Fetching absences from FTV API (Method 1: by year/szekcio)...")
+        # Fetch by startYear and szekcio (the correct method)
+        print(f"📥 Fetching absences from FTV API...")
         print(f"   Endpoint: {FTV_BASE_URL}/hianyzasok/osztaly?startYear={ftv_start_year}&szekcio={osztaly.tagozat}")
         logger.info(f"Fetching absences for class {osztaly} using startYear={ftv_start_year}, szekcio={osztaly.tagozat}...")
         
-        try:
-            response_data = fetch_ftv_class_absences_by_year_szekcio(ftv_start_year, osztaly.tagozat, debug_performance)
-            print(f"   ✅ Method 1 (year/szekcio) succeeded!\n")
-        except FTVSyncError as e:
-            print(f"   ❌ Method 1 failed: {str(e)}")
-            print(f"   → Trying Method 2 (by class ID)...\n")
-            
-            # Fallback: try using local class ID (may not work)
-            ftv_osztaly_id = osztaly.id
-            print(f"⚠️  FALLBACK: Using local class ID ({ftv_osztaly_id}) as FTV osztaly ID")
-            print(f"   This may not match FTV's internal IDs!\n")
-            
-            print(f"📥 Fetching absences from FTV API (Method 2: by ID)...")
-            print(f"   Endpoint: {FTV_BASE_URL}/hianyzasok/osztaly/{ftv_osztaly_id}")
-            response_data = fetch_ftv_class_absences(ftv_osztaly_id, debug_performance)
+        response_data = fetch_ftv_class_absences_by_year_szekcio(ftv_start_year, osztaly.tagozat, debug_performance)
         
         # Handle response format (could be list or dict with 'data' and 'performance')
         if isinstance(response_data, dict) and 'data' in response_data:
@@ -884,7 +817,7 @@ def sync_class_absences_from_ftv(osztaly: Osztaly, debug_performance: bool = Fal
         if not ftv_absences:
             print(f"⚠️  WARNING: No absences received from FTV!")
             print(f"   This could mean:")
-            print(f"   - Class ID mismatch ({ftv_osztaly_id} not found in FTV)")
+            print(f"   - Class {ftv_start_year}/{osztaly.tagozat} not found in FTV")
             print(f"   - No students have absences")
             print(f"   - FTV API returned empty data\n")
         
