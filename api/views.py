@@ -516,6 +516,13 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
               'live' to sync with FTV first (default, slower but fresh)
         debug_performance: 'true' to fetch and log performance details from FTV backend
     """
+    print(f"\n{'='*100}")
+    print(f"🌐 API ENDPOINT: /igazolas")
+    print(f"   User: {request.auth.username} (ID: {request.auth.id})")
+    print(f"   Mode: {mode}")
+    print(f"   Debug Performance: {debug_performance}")
+    print(f"{'='*100}\n")
+    
     # Convert debug_performance string to boolean
     debug_perf = debug_performance.lower() in ('true', '1', 'yes')
     
@@ -523,40 +530,58 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
     should_print_perf = debug_perf and settings.DEBUG
     
     # Get teacher's class
+    print(f"👨‍🏫 Checking teacher profile and class...")
     teacher_profile = Profile.objects.filter(user=request.auth).first()
     if not teacher_profile:
+        print(f"   ✗ ERROR: No profile found for user\n")
         return 401, {
             'error': 'Unauthorized',
             'detail': 'No profile found for user'
         }
     
+    print(f"   ✓ Profile found: ID={teacher_profile.id}")
     teacher_class = teacher_profile.osztalyom()
     if not teacher_class:
+        print(f"   ✗ ERROR: No class found for this teacher\n")
         return 401, {
             'error': 'Unauthorized',
             'detail': 'No class found for this teacher'
         }
     
+    print(f"   ✓ Teacher's class: {teacher_class} (ID: {teacher_class.id})\n")
+    
     # Sync with FTV only if mode is 'live'
     sync_result = None
     if mode == "live":
+        print(f"🔄 MODE=LIVE: Triggering FTV sync...")
         try:
             logger.info(f"User {request.auth.username} requested /igazolas - triggering class-specific FTV sync")
             sync_result = sync_class_absences_from_ftv(teacher_class, debug_performance=debug_perf)
+            print(f"✅ FTV Sync completed successfully")
+            print(f"   Stats: {sync_result.get('statistics')}\n")
             logger.info(f"FTV sync completed: {sync_result.get('statistics')}")
             
             # Print performance details in dev mode
             if should_print_perf and sync_result.get('ftv_performance'):
+                print(f"📊 Performance Details: {sync_result['ftv_performance']}\n")
                 logger.info(f"FTV Performance Details: {sync_result['ftv_performance']}")
         except FTVSyncError as e:
+            print(f"❌ FTV sync failed: {str(e)}")
+            print(f"   → Continuing with existing data\n")
             logger.error(f"FTV sync failed but continuing with existing data: {str(e)}")
         except Exception as e:
+            print(f"❌ Unexpected error during FTV sync: {str(e)}")
+            print(f"   → Continuing with existing data\n")
+            import traceback
+            traceback.print_exc()
             logger.error(f"Unexpected error during FTV sync: {str(e)}")
     else:
+        print(f"💾 MODE=CACHED: Skipping FTV sync\n")
         logger.info(f"User {request.auth.username} requested /igazolas in cached mode - skipping FTV sync")
     
     # Get cache metadata to include in response headers or logging
     cache_metadata = get_cache_metadata(f'class_{teacher_class.id}')
+    print(f"💾 Cache metadata: {cache_metadata}\n")
     logger.info(f"Cache metadata: {cache_metadata}")
     
     # Fetch igazolások for the teacher's class
@@ -602,6 +627,15 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
             'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
         }
         result.append(igazolas_data)
+    
+    print(f"📤 RESPONSE DATA:")
+    print(f"   Total igazolások: {len(result)}")
+    ftv_count = sum(1 for i in result if i.get('ftv'))
+    print(f"   FTV igazolások: {ftv_count}")
+    print(f"   Non-FTV igazolások: {len(result) - ftv_count}")
+    if result:
+        print(f"   Sample (first record): eleje={result[0].get('eleje')}, vege={result[0].get('vege')}, ftv={result[0].get('ftv')}")
+    print(f"{'='*100}\n")
     
     # Add cache metadata to response (Ninja doesn't support custom headers easily, so we log it)
     # The frontend can make a separate call to get metadata if needed
