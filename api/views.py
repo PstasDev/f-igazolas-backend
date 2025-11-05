@@ -1084,7 +1084,7 @@ def forgot_password(request, data: ForgotPasswordRequest):
 
 @api.post("/check-otp", response={200: CheckOTPResponse, 400: ErrorResponse, 429: ErrorResponse}, auth=None, tags=["Password Reset"])
 @csrf_exempt
-@ratelimit(key='user_or_ip', rate='10/h', method='POST', block=True)
+# @ratelimit(key='user_or_ip', rate='10/h', method='POST', block=True)
 def check_otp(request, data: CheckOTPRequest):
     """
     Verify OTP code and return temporary reset token.
