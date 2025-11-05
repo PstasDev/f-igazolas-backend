@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
-from .models import Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas, SystemMessage
+from .models import Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas, SystemMessage, TanitasiSzunet, Override
 
 
 # Custom filter for last_login that excludes nulls
@@ -172,3 +172,62 @@ class SystemMessageAdmin(admin.ModelAdmin):
         return obj.is_active()
     is_currently_active.boolean = True
     is_currently_active.short_description = 'Aktív'
+
+
+# TanitasiSzunet Admin
+@admin.register(TanitasiSzunet)
+class TanitasiSzunetAdmin(admin.ModelAdmin):
+    list_display = ['id', 'get_display_name', 'type', 'from_date', 'to_date', 'get_duration_days']
+    list_filter = ['type', 'from_date', 'to_date']
+    search_fields = ['name', 'description', 'type']
+    date_hierarchy = 'from_date'
+    ordering = ['from_date']
+    
+    fieldsets = (
+        ('Alapadatok', {
+            'fields': ('type', 'name', 'from_date', 'to_date')
+        }),
+        ('További információk', {
+            'fields': ('description',)
+        }),
+    )
+    
+    def get_display_name(self, obj):
+        return obj.name if obj.name else obj.get_type_display()
+    get_display_name.short_description = 'Név'
+    
+    def get_duration_days(self, obj):
+        duration = (obj.to_date - obj.from_date).days + 1
+        return f"{duration} nap"
+    get_duration_days.short_description = 'Időtartam'
+
+
+# Override Admin
+@admin.register(Override)
+class OverrideAdmin(admin.ModelAdmin):
+    list_display = ['id', 'date', 'is_required', 'get_scope', 'get_reason_short']
+    list_filter = ['is_required', 'date', 'class_id']
+    search_fields = ['reason', 'class_id__tagozat']
+    date_hierarchy = 'date'
+    ordering = ['date']
+    raw_id_fields = ['class_id']
+    
+    fieldsets = (
+        ('Kivétel részletei', {
+            'fields': ('date', 'is_required', 'class_id')
+        }),
+        ('Indoklás', {
+            'fields': ('reason',)
+        }),
+    )
+    
+    def get_scope(self, obj):
+        return str(obj.class_id) if obj.class_id else 'Minden osztály'
+    get_scope.short_description = 'Hatókör'
+    
+    def get_reason_short(self, obj):
+        if obj.reason:
+            return obj.reason[:50] + '...' if len(obj.reason) > 50 else obj.reason
+        return '-'
+    get_reason_short.short_description = 'Indoklás'
+

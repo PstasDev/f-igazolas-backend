@@ -16,9 +16,17 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path
+from django.shortcuts import render
 from api.views import api
 
+
+def index_view(request):
+    """Simple index page with navigation links"""
+    return render(request, 'index.html')
+
+
 urlpatterns = [
+    path('', index_view, name='index'),
     path('admin/', admin.site.urls),
     path('api/', api.urls),
 ]

@@ -9,6 +9,7 @@ from datetime import timedelta, datetime
 
 class Profile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
+    frontendConfig = models.JSONField(default=dict, blank=True)  # Felhasználói frontend beállítások tárolása JSON formátumban, akármit tárolhat benne a frontend, mivel nincs backend logikához kötve
 
     def osztalyom(self):
         return Osztaly.objects.filter(tanulok=self.user).first() or Osztaly.objects.filter(osztalyfonokok=self.user).first()
@@ -345,3 +346,115 @@ class SystemMessage(models.Model):
         verbose_name = "Rendszerüzenet"
         verbose_name_plural = "Rendszerüzenetek"
         ordering = ['-showFrom']
+
+
+class TanitasiSzunet(models.Model):
+    """
+    Model to store school breaks that apply to all students globally.
+    
+    Examples: Őszi szünet, Téli szünet, Tavaszi szünet, Nyári szünet, etc.
+    """
+    # Type choices
+    TYPE_OSZI = 'oszi'
+    TYPE_TELI = 'teli'
+    TYPE_TAVASZI = 'tavaszi'
+    TYPE_NYARI = 'nyari'
+    TYPE_ERETTSEGI = 'erettsegi'
+    TYPE_DIGITALIS = 'digitalis'
+    TYPE_EGYEB = 'egyeb'
+    
+    TYPE_CHOICES = [
+        (TYPE_OSZI, 'Őszi szünet'),
+        (TYPE_TELI, 'Téli szünet'),
+        (TYPE_TAVASZI, 'Tavaszi szünet'),
+        (TYPE_NYARI, 'Nyári szünet'),
+        (TYPE_ERETTSEGI, 'Érettségi időszak'),
+        (TYPE_DIGITALIS, 'Digitális oktatás'),
+        (TYPE_EGYEB, 'Egyéb'),
+    ]
+    
+    type = models.CharField(
+        max_length=20, 
+        choices=TYPE_CHOICES, 
+        verbose_name='Típus',
+        help_text='A tanítási szünet típusa'
+    )
+    name = models.CharField(
+        max_length=200, 
+        blank=True, 
+        null=True, 
+        verbose_name='Név',
+        help_text='Egyedi név a szünetnek (opcionális)'
+    )
+    from_date = models.DateField(
+        verbose_name='Kezdő dátum',
+        help_text='A tanítási szünet kezdő dátuma'
+    )
+    to_date = models.DateField(
+        verbose_name='Záró dátum',
+        help_text='A tanítási szünet záró dátuma'
+    )
+    description = models.TextField(
+        max_length=1000, 
+        blank=True, 
+        null=True, 
+        verbose_name='Leírás',
+        help_text='Megjegyzések vagy további információk a szünetről'
+    )
+    
+    def __str__(self):
+        display_name = self.name if self.name else self.get_type_display()
+        return f"{display_name} ({self.from_date} - {self.to_date})"
+    
+    class Meta:
+        verbose_name = "Tanítási Szünet"
+        verbose_name_plural = "Tanítási Szünetek"
+        ordering = ['from_date']
+
+
+class Override(models.Model):
+    """
+    Model to store exceptions to the default attendance rule.
+    
+    Default rule: weekday = attendance required, weekend = not required
+    This model allows overriding this rule for specific dates.
+    
+    Examples:
+    - Saturday classes (is_required=True)
+    - Holiday on a weekday (is_required=False)
+    - Class-specific exceptions
+    """
+    date = models.DateField(
+        verbose_name='Dátum',
+        help_text='A kivétel dátuma'
+    )
+    is_required = models.BooleanField(
+        verbose_name='Jelenléti kötelezettség',
+        help_text='True = jelenlét kötelező, False = jelenlét nem kötelező'
+    )
+    class_id = models.ForeignKey(
+        Osztaly,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        verbose_name='Osztály',
+        help_text='Ha megadva, csak erre az osztályra vonatkozik. Ha üres, minden osztályra vonatkozik.',
+        related_name='overrides'
+    )
+    reason = models.TextField(
+        max_length=1000,
+        blank=True,
+        null=True,
+        verbose_name='Indoklás',
+        help_text='A kivétel indoklása vagy megjegyzések'
+    )
+    
+    def __str__(self):
+        scope = f"{self.class_id}" if self.class_id else "Minden osztály"
+        requirement = "Kötelező" if self.is_required else "Nem kötelező"
+        return f"{self.date} - {scope} - {requirement}"
+    
+    class Meta:
+        verbose_name = "Kivétel (Override)"
+        verbose_name_plural = "Kivételek (Overrides)"
+        ordering = ['date']

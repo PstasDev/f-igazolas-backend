@@ -1,5 +1,6 @@
 from ninja import Schema
-from datetime import datetime, date
+from datetime import datetime
+from datetime import date as DateType
 from typing import Optional, List
 
 
@@ -88,7 +89,7 @@ class IgazolasSchema(Schema):
     vege: datetime
     tipus: IgazolasTipusSchema
     megjegyzes: Optional[str] = None
-    rogzites_datuma: date  # DateField in model (auto_now_add)
+    rogzites_datuma: DateType  # DateField in model (auto_now_add)
     megjegyzes_diak: Optional[str] = None
     diak: bool
     ftv: bool
@@ -156,7 +157,7 @@ class IgazolasSimpleSchema(Schema):
     vege: datetime
     tipus: IgazolasTipusSchema
     allapot: str
-    rogzites_datuma: date
+    rogzites_datuma: DateType
     megjegyzes_diak: Optional[str] = None
     bkk_verification: Optional[dict] = None
 
@@ -240,3 +241,66 @@ class SystemMessageSchema(Schema):
     created_at: datetime
     updated_at: datetime
     is_active: bool
+
+
+# Tanítási Szünet schemas
+class TanitasiSzunetSchema(Schema):
+    id: int
+    type: str
+    name: Optional[str] = None
+    from_date: DateType
+    to_date: DateType
+    description: Optional[str] = None
+
+
+# Override schemas
+class OverrideSchema(Schema):
+    id: int
+    date: DateType
+    is_required: bool
+    class_id: Optional[int] = None
+    class_name: Optional[str] = None  # For convenience in response
+    reason: Optional[str] = None
+
+
+# Tanév Rendje combined schema
+class TanevRendjeSchema(Schema):
+    tanitasi_szunetek: List[TanitasiSzunetSchema]
+    overrides: List[OverrideSchema]
+
+
+# Create/Update request schemas
+class TanitasiSzunetCreateRequest(Schema):
+    type: str
+    name: Optional[str] = None
+    from_date: DateType
+    to_date: DateType
+    description: Optional[str] = None
+
+
+class TanitasiSzunetUpdateRequest(Schema):
+    type: Optional[str] = None
+    name: Optional[str] = None
+    from_date: Optional[DateType] = None
+    to_date: Optional[DateType] = None
+    description: Optional[str] = None
+
+
+class OverrideCreateRequest(Schema):
+    date: DateType
+    is_required: bool
+    class_id: Optional[int] = None
+    reason: Optional[str] = None
+
+
+class OverrideUpdateRequest(Schema):
+    date: Optional[DateType] = None
+    is_required: Optional[bool] = None
+    class_id: Optional[int] = None
+    reason: Optional[str] = None
+
+
+# Superuser check schema
+class SuperuserCheckResponse(Schema):
+    is_superuser: bool
+    username: str

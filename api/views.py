@@ -1,4 +1,4 @@
-from ninja import NinjaAPI
+from ninja import NinjaAPI, Body
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404
@@ -14,7 +14,8 @@ import requests
 
 from .models import (
     Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas,
-    PasswordResetOTP, ForgotPasswordToken, SystemMessage
+    PasswordResetOTP, ForgotPasswordToken, SystemMessage,
+    TanitasiSzunet, Override
 )
 from .schemas import (
     LoginRequest, TokenResponse, ErrorResponse,
@@ -26,7 +27,9 @@ from .schemas import (
     DiakjaCreateResponse, ForgotPasswordRequest, ForgotPasswordResponse,
     CheckOTPRequest, CheckOTPResponse, ChangePasswordOTPRequest,
     ChangePasswordOTPResponse, ToggleIgazolasTipusRequest, ToggleIgazolasTipusResponse,
-    SystemMessageSchema
+    SystemMessageSchema, TanitasiSzunetSchema, OverrideSchema, TanevRendjeSchema,
+    TanitasiSzunetCreateRequest, TanitasiSzunetUpdateRequest,
+    OverrideCreateRequest, OverrideUpdateRequest, SuperuserCheckResponse
 )
 from .jwt_utils import generate_jwt_token, decode_jwt_token
 from .authentication import JWTAuth
@@ -253,14 +256,40 @@ def get_my_profile(request):
                 'kezdes_eve': osztaly.kezdes_eve,
                 'nev': str(osztaly)
             } if osztaly else None,
-            'ftv_registered': ftv_registered  # New field for frontend
+            'ftv_registered': ftv_registered
+    }
+    except Profile.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': 'Profile not found for current user'
         }
+    
+# GET and POST profile/frontendConfig field
+@api.get("/profiles/me/frontend-config", response={200: dict, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Profile"])
+def get_my_frontend_config(request):
+    """Get current user's frontend config (requires authentication)"""
+    try:
+        profile = Profile.objects.get(user=request.auth)
+        return 200, profile.frontendConfig
     except Profile.DoesNotExist:
         return 404, {
             'error': 'Not found',
             'detail': 'Profile not found for current user'
         }
 
+@api.post("/profiles/me/frontend-config", response={200: dict, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Profile"])
+def update_my_frontend_config(request, data: dict = Body(...)):
+    """Update current user's frontend config (requires authentication)"""
+    try:
+        profile = Profile.objects.get(user=request.auth)
+        profile.frontendConfig = data
+        profile.save(update_fields=['frontendConfig'])
+        return 200, profile.frontendConfig
+    except Profile.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': 'Profile not found for current user'
+        }
 
 @api.get("/profiles/{profile_id}", response={200: ProfileSchema, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Profile"])
 def get_profile(request, profile_id: int):
@@ -1568,3 +1597,526 @@ def get_active_system_messages(request):
         }
         for msg in active_messages
     ]
+
+
+# ============================================================================
+# Tanév Rendje Endpoints
+# ============================================================================
+
+@api.get("/tanev_rendje", response={200: TanevRendjeSchema, 401: ErrorResponse}, auth=jwt_auth, tags=["Tanév Rendje"])
+def get_tanev_rendje(request, from_date: str = None, to_date: str = None):
+    """
+    Get school year schedule including breaks and overrides (requires authentication).
+    
+    Args:
+        from_date: Optional filter - start date in YYYY-MM-DD format
+        to_date: Optional filter - end date in YYYY-MM-DD format
+    
+    Returns:
+        Combined data from TanitasiSzunet and Override models
+    """
+    # Parse date filters if provided
+    from datetime import datetime as dt
+    
+    szunetek_query = TanitasiSzunet.objects.all()
+    overrides_query = Override.objects.all()
+    
+    if from_date:
+        try:
+            from_date_parsed = dt.strptime(from_date, '%Y-%m-%d').date()
+            szunetek_query = szunetek_query.filter(to_date__gte=from_date_parsed)
+            overrides_query = overrides_query.filter(date__gte=from_date_parsed)
+        except ValueError:
+            logger.warning(f"Invalid from_date format: {from_date}")
+    
+    if to_date:
+        try:
+            to_date_parsed = dt.strptime(to_date, '%Y-%m-%d').date()
+            szunetek_query = szunetek_query.filter(from_date__lte=to_date_parsed)
+            overrides_query = overrides_query.filter(date__lte=to_date_parsed)
+        except ValueError:
+            logger.warning(f"Invalid to_date format: {to_date}")
+    
+    # Fetch data
+    tanitasi_szunetek = szunetek_query.order_by('from_date')
+    overrides = overrides_query.select_related('class_id').order_by('date')
+    
+    # Build response
+    szunetek_data = [
+        {
+            'id': szunet.id,
+            'type': szunet.type,
+            'name': szunet.name,
+            'from_date': szunet.from_date,
+            'to_date': szunet.to_date,
+            'description': szunet.description
+        }
+        for szunet in tanitasi_szunetek
+    ]
+    
+    overrides_data = [
+        {
+            'id': override.id,
+            'date': override.date,
+            'is_required': override.is_required,
+            'class_id': override.class_id.id if override.class_id else None,
+            'class_name': str(override.class_id) if override.class_id else None,
+            'reason': override.reason
+        }
+        for override in overrides
+    ]
+    
+    return 200, {
+        'tanitasi_szunetek': szunetek_data,
+        'overrides': overrides_data
+    }
+
+
+# ============================================================================
+# User Info Endpoints
+# ============================================================================
+
+@api.get("/am-i-superuser", response={200: SuperuserCheckResponse, 401: ErrorResponse}, auth=jwt_auth, tags=["User Info"])
+def am_i_superuser(request):
+    """
+    Check if the current user is a superuser (requires authentication).
+    
+    This endpoint is used by the frontend to determine which UI components to display.
+    All actual operations are still protected by backend permissions checks.
+    """
+    return 200, {
+        'is_superuser': request.auth.is_superuser,
+        'username': request.auth.username
+    }
+
+
+# ============================================================================
+# Override Endpoints - Teacher Only (Own Class)
+# ============================================================================
+
+@api.post("/override/class", response={201: OverrideSchema, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Override - Teacher"])
+def create_class_override(request, data: OverrideCreateRequest):
+    """
+    Create a new override for the teacher's own class (requires authentication).
+    
+    Only class teachers (osztályfőnök) can create overrides for their class.
+    The override will automatically be assigned to the teacher's class.
+    """
+    # Check if user is a class teacher
+    if not is_class_teacher(request.auth):
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only class teachers (ofő) can create class overrides'
+        }
+    
+    # Get the teacher's class
+    teacher_class = get_teacher_class(request.auth)
+    if not teacher_class:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'No class found for this teacher'
+        }
+    
+    # Create override for teacher's class (ignore class_id from request)
+    override = Override.objects.create(
+        date=data.date,
+        is_required=data.is_required,
+        class_id=teacher_class,  # Always use teacher's class
+        reason=data.reason
+    )
+    
+    logger.info(f"Teacher {request.auth.username} created override for class {teacher_class} on {data.date}")
+    
+    return 201, {
+        'id': override.id,
+        'date': override.date,
+        'is_required': override.is_required,
+        'class_id': override.class_id.id if override.class_id else None,
+        'class_name': str(override.class_id) if override.class_id else None,
+        'reason': override.reason
+    }
+
+
+@api.put("/override/class/{override_id}", response={200: OverrideSchema, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Override - Teacher"])
+def update_class_override(request, override_id: int, data: OverrideUpdateRequest):
+    """
+    Update an existing override for the teacher's own class (requires authentication).
+    
+    Only class teachers (osztályfőnök) can update overrides for their class.
+    Teachers can only update overrides that belong to their class.
+    """
+    # Check if user is a class teacher
+    if not is_class_teacher(request.auth):
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only class teachers (ofő) can update class overrides'
+        }
+    
+    # Get the teacher's class
+    teacher_class = get_teacher_class(request.auth)
+    if not teacher_class:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'No class found for this teacher'
+        }
+    
+    # Get the override
+    try:
+        override = Override.objects.get(id=override_id)
+    except Override.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'Override with id {override_id} does not exist'
+        }
+    
+    # Verify override belongs to teacher's class
+    if override.class_id != teacher_class:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'You can only update overrides for your own class'
+        }
+    
+    # Update fields if provided
+    if data.date is not None:
+        override.date = data.date
+    if data.is_required is not None:
+        override.is_required = data.is_required
+    if data.reason is not None:
+        override.reason = data.reason
+    # Note: class_id cannot be changed for class-specific overrides
+    
+    override.save()
+    
+    logger.info(f"Teacher {request.auth.username} updated override {override_id} for class {teacher_class}")
+    
+    return 200, {
+        'id': override.id,
+        'date': override.date,
+        'is_required': override.is_required,
+        'class_id': override.class_id.id if override.class_id else None,
+        'class_name': str(override.class_id) if override.class_id else None,
+        'reason': override.reason
+    }
+
+
+@api.delete("/override/class/{override_id}", response={200: dict, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Override - Teacher"])
+def delete_class_override(request, override_id: int):
+    """
+    Delete an existing override for the teacher's own class (requires authentication).
+    
+    Only class teachers (osztályfőnök) can delete overrides for their class.
+    Teachers can only delete overrides that belong to their class.
+    """
+    # Check if user is a class teacher
+    if not is_class_teacher(request.auth):
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only class teachers (ofő) can delete class overrides'
+        }
+    
+    # Get the teacher's class
+    teacher_class = get_teacher_class(request.auth)
+    if not teacher_class:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'No class found for this teacher'
+        }
+    
+    # Get the override
+    try:
+        override = Override.objects.get(id=override_id)
+    except Override.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'Override with id {override_id} does not exist'
+        }
+    
+    # Verify override belongs to teacher's class
+    if override.class_id != teacher_class:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'You can only delete overrides for your own class'
+        }
+    
+    override.delete()
+    
+    logger.info(f"Teacher {request.auth.username} deleted override {override_id} for class {teacher_class}")
+    
+    return 200, {
+        'message': f'Override {override_id} deleted successfully',
+        'success': True
+    }
+
+
+# ============================================================================
+# Override Endpoints - Superuser Only (Global)
+# ============================================================================
+
+@api.post("/override/global", response={201: OverrideSchema, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Override - Superuser"])
+def create_global_override(request, data: OverrideCreateRequest):
+    """
+    Create a new global override (requires superuser authentication).
+    
+    Global overrides apply to all classes unless a specific class_id is provided.
+    Only superusers can create global overrides.
+    """
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can create global overrides'
+        }
+    
+    # Validate class_id if provided
+    class_instance = None
+    if data.class_id:
+        try:
+            class_instance = Osztaly.objects.get(id=data.class_id)
+        except Osztaly.DoesNotExist:
+            return 400, {
+                'error': 'Validation error',
+                'detail': f'Class with id {data.class_id} does not exist'
+            }
+    
+    # Create override
+    override = Override.objects.create(
+        date=data.date,
+        is_required=data.is_required,
+        class_id=class_instance,
+        reason=data.reason
+    )
+    
+    scope = f"class {class_instance}" if class_instance else "all classes"
+    logger.info(f"Superuser {request.auth.username} created global override for {scope} on {data.date}")
+    
+    return 201, {
+        'id': override.id,
+        'date': override.date,
+        'is_required': override.is_required,
+        'class_id': override.class_id.id if override.class_id else None,
+        'class_name': str(override.class_id) if override.class_id else None,
+        'reason': override.reason
+    }
+
+
+@api.put("/override/global/{override_id}", response={200: OverrideSchema, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Override - Superuser"])
+def update_global_override(request, override_id: int, data: OverrideUpdateRequest):
+    """
+    Update an existing global override (requires superuser authentication).
+    
+    Only superusers can update any override (global or class-specific).
+    """
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can update global overrides'
+        }
+    
+    # Get the override
+    try:
+        override = Override.objects.get(id=override_id)
+    except Override.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'Override with id {override_id} does not exist'
+        }
+    
+    # Update fields if provided
+    if data.date is not None:
+        override.date = data.date
+    if data.is_required is not None:
+        override.is_required = data.is_required
+    if data.reason is not None:
+        override.reason = data.reason
+    
+    # Update class_id if provided (can be None to make it global, or specific class)
+    if 'class_id' in data.__dict__:  # Check if field was explicitly provided
+        if data.class_id is None:
+            override.class_id = None
+        else:
+            try:
+                class_instance = Osztaly.objects.get(id=data.class_id)
+                override.class_id = class_instance
+            except Osztaly.DoesNotExist:
+                return 400, {
+                    'error': 'Validation error',
+                    'detail': f'Class with id {data.class_id} does not exist'
+                }
+    
+    override.save()
+    
+    logger.info(f"Superuser {request.auth.username} updated override {override_id}")
+    
+    return 200, {
+        'id': override.id,
+        'date': override.date,
+        'is_required': override.is_required,
+        'class_id': override.class_id.id if override.class_id else None,
+        'class_name': str(override.class_id) if override.class_id else None,
+        'reason': override.reason
+    }
+
+
+@api.delete("/override/global/{override_id}", response={200: dict, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Override - Superuser"])
+def delete_global_override(request, override_id: int):
+    """
+    Delete an existing global override (requires superuser authentication).
+    
+    Only superusers can delete any override (global or class-specific).
+    """
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can delete global overrides'
+        }
+    
+    # Get the override
+    try:
+        override = Override.objects.get(id=override_id)
+    except Override.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'Override with id {override_id} does not exist'
+        }
+    
+    override.delete()
+    
+    logger.info(f"Superuser {request.auth.username} deleted override {override_id}")
+    
+    return 200, {
+        'message': f'Override {override_id} deleted successfully',
+        'success': True
+    }
+
+
+# ============================================================================
+# Tanítási Szünet Endpoints - Superuser Only
+# ============================================================================
+
+@api.post("/tanitasi-szunet", response={201: TanitasiSzunetSchema, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Tanítási Szünet - Superuser"])
+def create_tanitasi_szunet(request, data: TanitasiSzunetCreateRequest):
+    """
+    Create a new school break (requires superuser authentication).
+    
+    School breaks apply globally to all students and classes.
+    Only superusers can create school breaks.
+    """
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can create school breaks'
+        }
+    
+    # Validate dates
+    if data.to_date < data.from_date:
+        return 400, {
+            'error': 'Validation error',
+            'detail': 'End date must be after or equal to start date'
+        }
+    
+    # Create school break
+    szunet = TanitasiSzunet.objects.create(
+        type=data.type,
+        name=data.name,
+        from_date=data.from_date,
+        to_date=data.to_date,
+        description=data.description
+    )
+    
+    logger.info(f"Superuser {request.auth.username} created school break: {szunet}")
+    
+    return 201, {
+        'id': szunet.id,
+        'type': szunet.type,
+        'name': szunet.name,
+        'from_date': szunet.from_date,
+        'to_date': szunet.to_date,
+        'description': szunet.description
+    }
+
+
+@api.put("/tanitasi-szunet/{szunet_id}", response={200: TanitasiSzunetSchema, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Tanítási Szünet - Superuser"])
+def update_tanitasi_szunet(request, szunet_id: int, data: TanitasiSzunetUpdateRequest):
+    """
+    Update an existing school break (requires superuser authentication).
+    
+    Only superusers can update school breaks.
+    """
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can update school breaks'
+        }
+    
+    # Get the school break
+    try:
+        szunet = TanitasiSzunet.objects.get(id=szunet_id)
+    except TanitasiSzunet.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'School break with id {szunet_id} does not exist'
+        }
+    
+    # Update fields if provided
+    if data.type is not None:
+        szunet.type = data.type
+    if data.name is not None:
+        szunet.name = data.name
+    if data.from_date is not None:
+        szunet.from_date = data.from_date
+    if data.to_date is not None:
+        szunet.to_date = data.to_date
+    if data.description is not None:
+        szunet.description = data.description
+    
+    # Validate dates
+    if szunet.to_date < szunet.from_date:
+        return 400, {
+            'error': 'Validation error',
+            'detail': 'End date must be after or equal to start date'
+        }
+    
+    szunet.save()
+    
+    logger.info(f"Superuser {request.auth.username} updated school break {szunet_id}")
+    
+    return 200, {
+        'id': szunet.id,
+        'type': szunet.type,
+        'name': szunet.name,
+        'from_date': szunet.from_date,
+        'to_date': szunet.to_date,
+        'description': szunet.description
+    }
+
+
+@api.delete("/tanitasi-szunet/{szunet_id}", response={200: dict, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Tanítási Szünet - Superuser"])
+def delete_tanitasi_szunet(request, szunet_id: int):
+    """
+    Delete an existing school break (requires superuser authentication).
+    
+    Only superusers can delete school breaks.
+    """
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can delete school breaks'
+        }
+    
+    # Get the school break
+    try:
+        szunet = TanitasiSzunet.objects.get(id=szunet_id)
+    except TanitasiSzunet.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'School break with id {szunet_id} does not exist'
+        }
+    
+    szunet.delete()
+    
+    logger.info(f"Superuser {request.auth.username} deleted school break {szunet_id}")
+    
+    return 200, {
+        'message': f'School break {szunet_id} deleted successfully',
+        'success': True
+    }
+
