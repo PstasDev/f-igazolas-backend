@@ -1032,12 +1032,9 @@ def update_teacher_comment(request, igazolas_id: int, data: TeacherCommentUpdate
 
 @api.post("/forgot-password", response={200: ForgotPasswordResponse, 400: ErrorResponse, 404: ErrorResponse}, auth=None, tags=["Password Reset"])
 @csrf_exempt
-@ratelimit(key='ip', rate='3/h', method='POST', block=True)
 def forgot_password(request, data: ForgotPasswordRequest):
     """
     Request password reset by sending OTP to user's email.
-    
-    Rate limited to 3 requests per hour per IP.
     """
     try:
         # Find user by username
@@ -1091,8 +1088,8 @@ def forgot_password(request, data: ForgotPasswordRequest):
 def check_otp(request, data: CheckOTPRequest):
     """
     Verify OTP code and return temporary reset token.
-    
-    Rate limited to 10 requests per hour per IP.
+
+    Rate limited to 10 requests per hour per user or IP.
     """
     try:
         # Find user
@@ -1166,12 +1163,9 @@ def check_otp(request, data: CheckOTPRequest):
 
 @api.post("/change-password-otp", response={200: ChangePasswordOTPResponse, 400: ErrorResponse, 401: ErrorResponse}, auth=None, tags=["Password Reset"])
 @csrf_exempt
-@ratelimit(key='ip', rate='5/h', method='POST', block=True)
 def change_password_otp(request, data: ChangePasswordOTPRequest):
     """
     Change password using temporary reset token.
-    
-    Rate limited to 5 requests per hour per IP.
     """
     try:
         # Find user
