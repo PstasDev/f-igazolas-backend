@@ -11,7 +11,26 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
 from pathlib import Path
-from decouple import config
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+def config(key, default=None, cast=None):
+    """Simple config function to read environment variables"""
+    value = os.environ.get(key, default)
+    if value is None:
+        raise ValueError(f"Environment variable '{key}' not found and no default provided")
+    if cast:
+        try:
+            if cast == bool:
+                # Handle boolean values
+                return value.lower() in ('true', '1', 'yes', 'on')
+            return cast(value)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Failed to cast '{key}' value '{value}' to {cast.__name__}: {e}")
+    return value
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent

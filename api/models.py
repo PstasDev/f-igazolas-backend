@@ -10,6 +10,7 @@ from datetime import timedelta, datetime
 class Profile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     frontendConfig = models.JSONField(default=dict, blank=True)  # Felhasználói frontend beállítások tárolása JSON formátumban, akármit tárolhat benne a frontend, mivel nincs backend logikához kötve
+    login_count = models.IntegerField(default=0)  # Track total number of successful logins
 
     def osztalyom(self):
         return Osztaly.objects.filter(tanulok=self.user).first() or Osztaly.objects.filter(osztalyfonokok=self.user).first()
@@ -26,6 +27,39 @@ class Profile(models.Model):
     class Meta:
         verbose_name = 'Profil'
         verbose_name_plural = 'Profilok'
+
+
+class PermissionChangeLog(models.Model):
+    """
+    Model to track permission changes (superuser promote/demote actions).
+    Provides audit trail for administrative permission changes.
+    """
+    ACTION_PROMOTED = 'promoted'
+    ACTION_DEMOTED = 'demoted'
+    
+    ACTION_CHOICES = [
+        (ACTION_PROMOTED, 'Promoted to Superuser'),
+        (ACTION_DEMOTED, 'Demoted from Superuser'),
+    ]
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='permission_changes')
+    changed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='permission_changes_made')
+    changed_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES)
+    previous_value = models.BooleanField()
+    new_value = models.BooleanField()
+    
+    def __str__(self):
+        return f"{self.user.username} - {self.action} by {self.changed_by.username if self.changed_by else 'System'} at {self.changed_at}"
+    
+    class Meta:
+        verbose_name = 'Permission Change Log'
+        verbose_name_plural = 'Permission Change Logs'
+        ordering = ['-changed_at']
+        indexes = [
+            models.Index(fields=['user', '-changed_at']),
+            models.Index(fields=['changed_by', '-changed_at']),
+        ]
 
 class Osztaly(models.Model):
     tagozat = models.CharField(max_length=1) # PL. A, B, C
@@ -48,6 +82,7 @@ class Osztaly(models.Model):
 # Hiányzás modellek
 
 # Mulasztás - Krétából importált hiányzás
+# Mulasztás - Krétából importált hiányzás VAGY diák által feltöltött (EXPERIMENTAL)
 class Mulasztas(models.Model):
     datum = models.DateField()
     ora = models.IntegerField() # 0-8
@@ -63,10 +98,27 @@ class Mulasztas(models.Model):
     igazolt = models.BooleanField(default=False)
     igazolas_tipusa = models.CharField(max_length=100, null=True, blank=True) # Pl. orvosi igazolás
     rogzites_datuma = models.DateField() # Mikor lett a KRÉTÁBA rögzítve a mulasztás?
+    
+    # EXPERIMENTAL: Student-uploaded data from eKréta
+    uploaded_by_student = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True, 
+                                           related_name='uploaded_mulasztasok',
+                                           verbose_name="Feltöltő diák",
+                                           help_text="Ha diák töltötte fel eKrétából (EXPERIMENTAL)")
+    tanorai_celu_mulasztas = models.BooleanField(default=False, verbose_name="Tanórai célú mulasztás")
+    mulasztas_ok = models.CharField(max_length=300, blank=True, null=True, verbose_name="Mulasztás oka")
+    mulasztas_statusz = models.CharField(max_length=200, blank=True, null=True, verbose_name="Mulasztás státusz")
+    uploaded_at = models.DateTimeField(null=True, blank=True, verbose_name="Feltöltve (eKréta)")
 
+    def __str__(self):
+        student = self.uploaded_by_student.username if self.uploaded_by_student else "System"
+        return f"{student} - {self.datum} - {self.tantargy}"
+    
     class Meta:
         verbose_name = 'Mulasztás'
         verbose_name_plural = 'Mulasztások'
+        indexes = [
+            models.Index(fields=['uploaded_by_student', '-datum']),
+        ]
 
 class IgazolasTipus(models.Model):
     nev = models.CharField(max_length=100) # Pl. orvosi igazolás

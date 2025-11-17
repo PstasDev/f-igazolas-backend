@@ -15,7 +15,7 @@ import requests
 from .models import (
     Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas,
     PasswordResetOTP, ForgotPasswordToken, SystemMessage,
-    TanitasiSzunet, Override
+    TanitasiSzunet, Override, PermissionChangeLog
 )
 from .schemas import (
     LoginRequest, TokenResponse, ErrorResponse,
@@ -29,11 +29,26 @@ from .schemas import (
     ChangePasswordOTPResponse, ToggleIgazolasTipusRequest, ToggleIgazolasTipusResponse,
     SystemMessageSchema, TanitasiSzunetSchema, OverrideSchema, TanevRendjeSchema,
     TanitasiSzunetCreateRequest, TanitasiSzunetUpdateRequest,
-    OverrideCreateRequest, OverrideUpdateRequest, SuperuserCheckResponse
+    OverrideCreateRequest, OverrideUpdateRequest, SuperuserCheckResponse,
+    # Admin Phase 1 schemas
+    GeneratePasswordResponse, ResetPasswordRequest, ResetPasswordResponse,
+    TeacherAssignmentRequest, AssignTeacherResponse, RemoveTeacherResponse,
+    MoveOsztalyfonokRequest, MoveOsztalyfonokResponse, GetTeachersResponse,
+    PromoteDemoteResponse, UserPermissionsResponse, LoginStatsResponse,
+    # Mulasztas upload schemas (EXPERIMENTAL)
+    MulasztasUploadSchema, MulasztasAnalysisResult, UploadMulasztasResponse
 )
 from .jwt_utils import generate_jwt_token, decode_jwt_token
 from .authentication import JWTAuth
-from .email_utils import send_otp_email, send_password_changed_notification
+from .email_utils import (
+    send_otp_email, send_password_changed_notification,
+    send_password_generated_email, send_permission_change_email
+)
+from .admin_utils import (
+    generate_strong_password, validate_password_strength, is_superuser,
+    log_permission_change, get_permission_history, invalidate_user_sessions,
+    get_user_full_name, is_teacher, can_remove_teacher_from_class
+)
 from .ftv_sync import (
     sync_user_absences_from_ftv, 
     sync_class_absences_from_ftv,
@@ -175,6 +190,11 @@ def login(request, data: LoginRequest):
     # Update last_login timestamp
     user.last_login = timezone.now()
     user.save(update_fields=['last_login'])
+    
+    # Increment login_count in Profile
+    profile, created = Profile.objects.get_or_create(user=user)
+    profile.login_count += 1
+    profile.save(update_fields=['login_count'])
     
     # Generate JWT token
     token = generate_jwt_token(user)
@@ -411,6 +431,239 @@ def list_mulasztas(request):
     """Get all absences (requires authentication)"""
     mulasztasok = Mulasztas.objects.all()
     return 200, list(mulasztasok)
+
+
+@api.post("/mulasztas/upload-ekreta", response={200: UploadMulasztasResponse, 400: ErrorResponse, 401: ErrorResponse}, auth=jwt_auth, tags=["Mulasztas - EXPERIMENTAL"])
+def upload_ekreta_xlsx(request):
+    """
+    Upload eKréta XLSX export and create/update Mulasztas records for the student.
+    
+    EXPERIMENTAL FEATURE - Students can upload their eKréta attendance export.
+    The system will:
+    1. Parse the XLSX file
+    2. Create/update Mulasztas records for the student
+    3. Analyze which mulasztások are covered by existing igazolások
+    4. Return analysis results
+    
+    Expected XLSX columns (based on eKréta export format):
+    - Mulasztás dátuma (column 0)
+    - Óraszám (column 1)
+    - Tárgy (column 2)
+    - Téma (column 3)
+    - Mulasztás típusa (column 4)
+    - Igazolt (column 5) - "Igen" or "Nem"
+    - Tanórai célú mulasztás (column 6) - "Igen" or "Nem"
+    - Igazolás típusa (column 7)
+    - Rögzítés dátuma (column 8)
+    - Ok (column 9) - optional
+    - Státusz (column 10) - optional
+    
+    Requires authentication. Only students can upload their own records.
+    These records are ONLY visible to the student who uploaded them (NOT to teachers).
+    """
+    if 'file' not in request.FILES:
+        return 400, {
+            'error': 'No file uploaded',
+            'detail': 'Az XLSX fájl hiányzik. Kérjük töltse fel az eKréta export fájlt.'
+        }
+    
+    xlsx_file = request.FILES['file']
+    
+    # Validate file extension
+    if not xlsx_file.name.endswith(('.xlsx', '.xls')):
+        return 400, {
+            'error': 'Invalid file type',
+            'detail': 'Csak .xlsx vagy .xls fájlokat fogadunk el.'
+        }
+    
+    try:
+        import openpyxl
+        from datetime import datetime as dt
+        
+        # Load workbook
+        workbook = openpyxl.load_workbook(xlsx_file)
+        sheet = workbook.active
+        
+        # Parse all rows (skip header)
+        rows = []
+        for row in sheet.iter_rows(min_row=2):  # Skip header row
+            rows.append([cell.value for cell in row])
+        
+        created_count = 0
+        updated_count = 0
+        error_count = 0
+        errors = []
+        
+        # Process each row
+        for idx, row in enumerate(rows, start=2):  # Start at 2 because row 1 is header
+            try:
+                # Skip empty rows
+                if not row[0]:  # If date is empty, skip
+                    continue
+                
+                # Parse date (handle Hungarian eKréta format: "2025. 11. 17.")
+                if isinstance(row[0], dt):
+                    mulasztas_datuma = row[0].date()
+                elif isinstance(row[0], str):
+                    # Remove extra spaces and try various formats
+                    date_str = row[0].strip().replace('. ', '.').rstrip('.')
+                    try:
+                        # Try YYYY.MM.DD format (Hungarian eKréta: "2025. 11. 17.")
+                        mulasztas_datuma = dt.strptime(date_str, '%Y.%m.%d').date()
+                    except ValueError:
+                        try:
+                            # Try YYYY-MM-DD format
+                            mulasztas_datuma = dt.strptime(row[0], '%Y-%m-%d').date()
+                        except ValueError:
+                            try:
+                                # Try DD.MM.YYYY format
+                                mulasztas_datuma = dt.strptime(date_str, '%d.%m.%Y').date()
+                            except ValueError:
+                                errors.append(f"Row {idx}: Invalid date format '{row[0]}'")
+                                error_count += 1
+                                continue
+                else:
+                    mulasztas_datuma = row[0]
+                
+                # Parse óraszám (lesson number)
+                try:
+                    oraszam = int(row[1]) if row[1] is not None else 0
+                except (ValueError, TypeError):
+                    errors.append(f"Row {idx}: Invalid óraszám '{row[1]}'")
+                    error_count += 1
+                    continue
+                
+                # Parse boolean fields
+                igazolt = row[5] in ['Igen', 'igen', 'IGEN', True, 1] if row[5] else False
+                tanorai_celu = row[6] in ['Igen', 'igen', 'IGEN', True, 1] if row[6] else False
+                
+                # Parse rögzítés dátuma (as date, not datetime for Mulasztas model)
+                # Handle Hungarian eKréta format: "2025. 11. 17."
+                if isinstance(row[8], dt):
+                    rogzites_datuma = row[8].date() if hasattr(row[8], 'date') else row[8]
+                elif isinstance(row[8], str) and row[8]:
+                    date_str = row[8].strip().replace('. ', '.').rstrip('.')
+                    try:
+                        # Try YYYY.MM.DD format (Hungarian eKréta: "2025. 11. 17.")
+                        rogzites_datuma = dt.strptime(date_str, '%Y.%m.%d').date()
+                    except ValueError:
+                        try:
+                            # Try YYYY-MM-DD format
+                            rogzites_datuma = dt.strptime(row[8], '%Y-%m-%d').date()
+                        except ValueError:
+                            try:
+                                # Try DD.MM.YYYY format
+                                rogzites_datuma = dt.strptime(date_str, '%d.%m.%Y').date()
+                            except ValueError:
+                                # Default to today if parsing fails
+                                rogzites_datuma = timezone.now().date()
+                else:
+                    rogzites_datuma = timezone.now().date()
+                
+                # Check if record exists (for this student only)
+                existing = Mulasztas.objects.filter(
+                    uploaded_by_student=request.auth,
+                    datum=mulasztas_datuma,
+                    ora=oraszam
+                ).first()
+                
+                # Prepare data
+                mulasztas_data = {
+                    'uploaded_by_student': request.auth,
+                    'datum': mulasztas_datuma,
+                    'ora': oraszam,
+                    'tantargy': str(row[2])[:100] if row[2] else '',
+                    'tema': str(row[3])[:200] if row[3] else '',
+                    'tipus': str(row[4])[:50] if row[4] else '',
+                    'igazolt': igazolt,
+                    'tanorai_celu_mulasztas': tanorai_celu,
+                    'igazolas_tipusa': str(row[7])[:100] if row[7] else None,
+                    'rogzites_datuma': rogzites_datuma,
+                    'mulasztas_ok': str(row[9])[:300] if len(row) > 9 and row[9] else None,
+                    'mulasztas_statusz': str(row[10])[:200] if len(row) > 10 and row[10] else None,
+                    'uploaded_at': timezone.now(),
+                }
+                
+                if existing:
+                    # Update existing record
+                    for key, value in mulasztas_data.items():
+                        setattr(existing, key, value)
+                    existing.save()
+                    updated_count += 1
+                else:
+                    # Create new record
+                    Mulasztas.objects.create(**mulasztas_data)
+                    created_count += 1
+                    
+            except Exception as e:
+                errors.append(f"Row {idx}: {str(e)}")
+                error_count += 1
+                logger.error(f"Error processing row {idx}: {str(e)}")
+        
+        # Perform analysis: compare student's Mulasztas with Igazolas
+        analysis = analyze_mulasztas_coverage(request.auth)
+        
+        logger.info(f"User {request.auth.username} uploaded eKréta XLSX: {created_count} created, {updated_count} updated, {error_count} errors")
+        
+        return 200, {
+            'success': True,
+            'message': f'Feldolgozva {created_count + updated_count} rekord. Létrehozva: {created_count}, Frissítve: {updated_count}, Hibák: {error_count}',
+            'total_processed': created_count + updated_count,
+            'created_count': created_count,
+            'updated_count': updated_count,
+            'error_count': error_count,
+            'errors': errors[:10],  # Return max 10 errors to avoid huge response
+            'analysis': analysis
+        }
+        
+    except ImportError:
+        return 400, {
+            'error': 'Missing dependency',
+            'detail': 'Az openpyxl könyvtár nincs telepítve. Kérjük vegye fel a kapcsolatot az adminisztrátorral.'
+        }
+    except Exception as e:
+        logger.error(f"Error processing XLSX upload: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return 400, {
+            'error': 'Processing error',
+            'detail': f'Hiba történt a fájl feldolgozása során: {str(e)}'
+        }
+
+
+@api.get("/mulasztas/my", response={200: MulasztasAnalysisResult, 401: ErrorResponse}, auth=jwt_auth, tags=["Mulasztas - EXPERIMENTAL"])
+def get_my_mulasztas(request, include_igazolt: bool = False):
+    """
+    Get current user's uploaded Mulasztas records with analysis.
+    
+    EXPERIMENTAL FEATURE - Returns student's uploaded eKréta attendance records
+    with analysis of coverage by existing igazolások.
+    
+    Args:
+        include_igazolt: If True, includes already justified absences. Default is False.
+    
+    Requires authentication. Students can only see their own records.
+    """
+    analysis = analyze_mulasztas_coverage(request.auth, include_igazolt=include_igazolt)
+    return 200, analysis
+
+
+@api.delete("/mulasztas/my", response={200: dict, 401: ErrorResponse}, auth=jwt_auth, tags=["Mulasztas - EXPERIMENTAL"])
+def delete_my_mulasztas(request):
+    """
+    Delete all student-uploaded Mulasztas records for the current user.
+    
+    EXPERIMENTAL FEATURE - Allows students to clear their uploaded eKréta data.
+    
+    Requires authentication. Students can only delete their own records.
+    """
+    deleted_count = Mulasztas.objects.filter(uploaded_by_student=request.auth).delete()[0]
+    logger.info(f"User {request.auth.username} deleted {deleted_count} student-uploaded Mulasztas records")
+    
+    return 200, {
+        'message': f'{deleted_count} mulasztás rekord törölve.',
+        'deleted_count': deleted_count
+    }
 
 
 @api.get("/mulasztas/{mulasztas_id}", response={200: MulasztasSchema, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Mulasztas"])
@@ -2120,3 +2373,728 @@ def delete_tanitasi_szunet(request, szunet_id: int):
         'success': True
     }
 
+
+# ============================================================================
+# ADMIN PHASE 1 ENDPOINTS
+# ============================================================================
+
+# Feature #1: Password Management
+
+@api.post("/admin/users/{user_id}/generate-password", response={200: GeneratePasswordResponse, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Password Management"])
+def generate_user_password(request, user_id: int, send_email: bool = False):
+    """
+    Generate a strong password for a user.
+    
+    Requires superuser authentication. If send_email=True, sends password via email.
+    If send_email=False, returns password in response (one-time display only).
+    """
+    # Check superuser permission
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can generate passwords for users'
+        }
+    
+    # Get the user
+    try:
+        user = User.objects.get(id=user_id, is_active=True)
+    except User.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'User with id {user_id} does not exist or is inactive'
+        }
+    
+    # Generate strong password
+    new_password = generate_strong_password()
+    
+    # Hash and save password
+    user.set_password(new_password)
+    user.save()
+    
+    # Invalidate existing sessions
+    invalidate_user_sessions(user)
+    
+    # Log the action
+    logger.info(f"Superuser {request.auth.username} generated new password for user {user.username}")
+    
+    # Send email or return password
+    if send_email:
+        if not user.email:
+            return 400, {
+                'error': 'Bad request',
+                'detail': 'User has no email address configured'
+            }
+        
+        email_sent = send_password_generated_email(user, new_password)
+        
+        if email_sent:
+            return 200, {
+                'password': None,
+                'message': f'New password generated and sent to {user.email}',
+                'email_sent': True
+            }
+        else:
+            return 400, {
+                'error': 'Email failed',
+                'detail': 'Failed to send email. Password was changed but not delivered.'
+            }
+    else:
+        # Return password in response (one-time display)
+        return 200, {
+            'password': new_password,
+            'message': 'New password generated. This is the only time it will be displayed.',
+            'email_sent': False
+        }
+
+
+@api.post("/admin/users/{user_id}/reset-password", response={200: ResetPasswordResponse, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Password Management"])
+def reset_user_password(request, user_id: int, data: ResetPasswordRequest):
+    """
+    Reset user password to a specified value.
+    
+    Requires superuser authentication. Validates password strength.
+    Optionally sends email notification to user.
+    """
+    # Check superuser permission
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can reset user passwords'
+        }
+    
+    # Get the user
+    try:
+        user = User.objects.get(id=user_id, is_active=True)
+    except User.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'User with id {user_id} does not exist or is inactive'
+        }
+    
+    # Validate password strength
+    is_valid, error_message = validate_password_strength(data.new_password)
+    if not is_valid:
+        return 400, {
+            'error': 'Weak password',
+            'detail': error_message
+        }
+    
+    # Hash and save password
+    user.set_password(data.new_password)
+    user.save()
+    
+    # Invalidate existing sessions
+    invalidate_user_sessions(user)
+    
+    # Log the action
+    logger.info(f"Superuser {request.auth.username} reset password for user {user.username}")
+    
+    # Send notification email if requested
+    email_sent = False
+    if data.send_email:
+        if user.email:
+            email_sent = send_password_changed_notification(user)
+    
+    return 200, {
+        'message': f'Password reset successfully for user {user.username}',
+        'email_sent': email_sent
+    }
+
+
+# Feature #3: Teacher Assignment to Classes
+
+@api.post("/admin/classes/{class_id}/assign-teacher", response={200: AssignTeacherResponse, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse, 409: ErrorResponse}, auth=jwt_auth, tags=["Admin - Teacher Assignment"])
+def assign_teacher_to_class(request, class_id: int, data: TeacherAssignmentRequest):
+    """
+    Assign a teacher to a class.
+    
+    Requires superuser authentication. Prevents duplicate assignments.
+    """
+    # Check superuser permission
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can assign teachers to classes'
+        }
+    
+    # Get the class
+    try:
+        osztaly = Osztaly.objects.get(id=class_id)
+    except Osztaly.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'Class with id {class_id} does not exist'
+        }
+    
+    # Get the teacher
+    try:
+        teacher = User.objects.get(id=data.teacher_id, is_active=True)
+    except User.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'User with id {data.teacher_id} does not exist or is inactive'
+        }
+    
+    # Check if already assigned
+    if teacher in osztaly.osztalyfonokok.all():
+        return 409, {
+            'error': 'Conflict',
+            'detail': f'Teacher {teacher.username} is already assigned to class {osztaly}'
+        }
+    
+    # Assign teacher to class
+    osztaly.osztalyfonokok.add(teacher)
+    
+    # Log the action
+    logger.info(f"Superuser {request.auth.username} assigned teacher {teacher.username} to class {osztaly}")
+    
+    return 200, {
+        'message': f'Teacher {teacher.username} assigned to class {osztaly}',
+        'teacher': {
+            'id': teacher.id,
+            'username': teacher.username,
+            'name': get_user_full_name(teacher),
+            'is_superuser': teacher.is_superuser
+        },
+        'class_info': {
+            'id': osztaly.id,
+            'name': str(osztaly)
+        }
+    }
+
+
+@api.delete("/admin/classes/{class_id}/remove-teacher/{teacher_id}", response={200: RemoveTeacherResponse, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Teacher Assignment"])
+def remove_teacher_from_class(request, class_id: int, teacher_id: int):
+    """
+    Remove a teacher from a class.
+    
+    Requires superuser authentication. Ensures at least one teacher remains assigned.
+    """
+    # Check superuser permission
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can remove teachers from classes'
+        }
+    
+    # Get the class
+    try:
+        osztaly = Osztaly.objects.get(id=class_id)
+    except Osztaly.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'Class with id {class_id} does not exist'
+        }
+    
+    # Get the teacher
+    try:
+        teacher = User.objects.get(id=teacher_id)
+    except User.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'User with id {teacher_id} does not exist'
+        }
+    
+    # Check if can remove
+    can_remove, error_msg = can_remove_teacher_from_class(osztaly, teacher)
+    if not can_remove:
+        return 400, {
+            'error': 'Bad request',
+            'detail': error_msg
+        }
+    
+    # Remove teacher from class
+    osztaly.osztalyfonokok.remove(teacher)
+    
+    # Log the action
+    logger.info(f"Superuser {request.auth.username} removed teacher {teacher.username} from class {osztaly}")
+    
+    return 200, {
+        'message': f'Teacher {teacher.username} removed from class {osztaly}',
+        'removed': True
+    }
+
+
+@api.post("/admin/users/osztalyfonok/move-to-class", response={200: MoveOsztalyfonokResponse, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Teacher Assignment"])
+def move_osztalyfonok_test_user(request, data: MoveOsztalyfonokRequest):
+    """
+    Move the 'osztalyfonok' test user to a different class.
+    
+    Requires superuser authentication. Removes from all current classes and assigns to new class.
+    """
+    # Check superuser permission
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can move the osztalyfonok test user'
+        }
+    
+    # Find the osztalyfonok user
+    try:
+        osztalyfonok_user = User.objects.get(username='osztalyfonok', is_active=True)
+    except User.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': 'The osztalyfonok test user does not exist'
+        }
+    
+    # Get the new class
+    try:
+        new_class = Osztaly.objects.get(id=data.class_id)
+    except Osztaly.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'Class with id {data.class_id} does not exist'
+        }
+    
+    # Get current classes
+    current_classes = Osztaly.objects.filter(osztalyfonokok=osztalyfonok_user)
+    previous_class = current_classes.first()
+    
+    # Remove from all current classes
+    for osztaly in current_classes:
+        osztaly.osztalyfonokok.remove(osztalyfonok_user)
+    
+    # Add to new class
+    new_class.osztalyfonokok.add(osztalyfonok_user)
+    
+    # Log the action
+    logger.info(f"Superuser {request.auth.username} moved osztalyfonok from {previous_class} to {new_class}")
+    
+    return 200, {
+        'message': f'Osztalyfonok test user moved to class {new_class}',
+        'previous_class': {
+            'id': previous_class.id,
+            'name': str(previous_class)
+        } if previous_class else None,
+        'new_class': {
+            'id': new_class.id,
+            'name': str(new_class)
+        }
+    }
+
+
+@api.get("/admin/classes/{class_id}/teachers", response={200: GetTeachersResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Teacher Assignment"])
+def get_class_teachers(request, class_id: int):
+    """
+    Get all teachers assigned to a class.
+    
+    Requires superuser authentication.
+    """
+    # Check superuser permission
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can view class teachers'
+        }
+    
+    # Get the class
+    try:
+        osztaly = Osztaly.objects.get(id=class_id)
+    except Osztaly.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'Class with id {class_id} does not exist'
+        }
+    
+    # Get teachers
+    teachers = osztaly.osztalyfonokok.all().order_by('last_name', 'first_name')
+    
+    teachers_data = [
+        {
+            'id': teacher.id,
+            'username': teacher.username,
+            'name': get_user_full_name(teacher),
+            'is_superuser': teacher.is_superuser,
+            'assigned_date': None  # We don't track assignment dates currently
+        }
+        for teacher in teachers
+    ]
+    
+    return 200, {
+        'teachers': teachers_data
+    }
+
+
+# Feature #6: Permissions Management
+
+@api.post("/admin/users/{user_id}/promote-superuser", response={200: PromoteDemoteResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Permissions"])
+def promote_to_superuser(request, user_id: int):
+    """
+    Promote a user to superuser status.
+    
+    Requires superuser authentication. Logs the permission change.
+    """
+    # Check superuser permission
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can promote users'
+        }
+    
+    # Get the user
+    try:
+        user = User.objects.get(id=user_id, is_active=True)
+    except User.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'User with id {user_id} does not exist or is inactive'
+        }
+    
+    # Check if already superuser
+    if user.is_superuser:
+        return 200, {
+            'message': f'User {user.username} is already a superuser',
+            'user': {
+                'id': user.id,
+                'username': user.username,
+                'is_superuser': True
+            }
+        }
+    
+    # Promote user
+    previous_value = user.is_superuser
+    user.is_superuser = True
+    user.is_staff = True  # Superusers should also have staff access
+    user.save()
+    
+    # Log permission change
+    log_permission_change(
+        user=user,
+        changed_by=request.auth,
+        action=PermissionChangeLog.ACTION_PROMOTED,
+        previous_value=previous_value,
+        new_value=True
+    )
+    
+    # Send notification email
+    if user.email:
+        send_permission_change_email(user, promoted=True, changed_by=request.auth)
+    
+    logger.info(f"Superuser {request.auth.username} promoted {user.username} to superuser")
+    
+    return 200, {
+        'message': f'User {user.username} promoted to superuser',
+        'user': {
+            'id': user.id,
+            'username': user.username,
+            'is_superuser': True
+        }
+    }
+
+
+@api.post("/admin/users/{user_id}/demote-superuser", response={200: PromoteDemoteResponse, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Permissions"])
+def demote_from_superuser(request, user_id: int):
+    """
+    Demote a user from superuser status.
+    
+    Requires superuser authentication. Prevents self-demotion. Logs the permission change.
+    """
+    # Check superuser permission
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can demote users'
+        }
+    
+    # Prevent self-demotion
+    if request.auth.id == user_id:
+        return 400, {
+            'error': 'Bad request',
+            'detail': 'You cannot demote yourself'
+        }
+    
+    # Get the user
+    try:
+        user = User.objects.get(id=user_id, is_active=True)
+    except User.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'User with id {user_id} does not exist or is inactive'
+        }
+    
+    # Check if not superuser
+    if not user.is_superuser:
+        return 200, {
+            'message': f'User {user.username} is not a superuser',
+            'user': {
+                'id': user.id,
+                'username': user.username,
+                'is_superuser': False
+            }
+        }
+    
+    # Demote user
+    previous_value = user.is_superuser
+    user.is_superuser = False
+    user.save()
+    
+    # Log permission change
+    log_permission_change(
+        user=user,
+        changed_by=request.auth,
+        action=PermissionChangeLog.ACTION_DEMOTED,
+        previous_value=previous_value,
+        new_value=False
+    )
+    
+    # Send notification email
+    if user.email:
+        send_permission_change_email(user, promoted=False, changed_by=request.auth)
+    
+    logger.info(f"Superuser {request.auth.username} demoted {user.username} from superuser")
+    
+    return 200, {
+        'message': f'User {user.username} demoted from superuser',
+        'user': {
+            'id': user.id,
+            'username': user.username,
+            'is_superuser': False
+        }
+    }
+
+
+@api.get("/admin/users/{user_id}/permissions", response={200: UserPermissionsResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Permissions"])
+def get_user_permissions(request, user_id: int):
+    """
+    Get user's current permissions and change history.
+    
+    Requires superuser authentication.
+    """
+    # Check superuser permission
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can view user permissions'
+        }
+    
+    # Get the user
+    try:
+        user = User.objects.get(id=user_id, is_active=True)
+    except User.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'User with id {user_id} does not exist or is inactive'
+        }
+    
+    # Get permission change history
+    history = get_permission_history(user, limit=50)
+    
+    change_history = [
+        {
+            'changed_by': log.changed_by.username if log.changed_by else 'System',
+            'changed_at': log.changed_at,
+            'action': log.action,
+            'previous_value': log.previous_value,
+            'new_value': log.new_value
+        }
+        for log in history
+    ]
+    
+    return 200, {
+        'user_id': user.id,
+        'username': user.username,
+        'is_superuser': user.is_superuser,
+        'is_staff': user.is_staff,
+        'permissions': [],  # Django permissions can be added here if needed
+        'change_history': change_history
+    }
+
+
+# Feature #4: Student Login Statistics
+
+@api.get("/admin/students/login-stats", response={200: LoginStatsResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Admin - Login Statistics"])
+def get_student_login_statistics(request):
+    """
+    Get comprehensive student login statistics.
+    
+    Requires superuser authentication. Returns per-class breakdown with individual student stats.
+    """
+    # Check superuser permission
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can view login statistics'
+        }
+    
+    # Get all classes
+    classes = Osztaly.objects.all().prefetch_related('tanulok')
+    
+    total_students = 0
+    total_logged_in = 0
+    per_class_stats = []
+    
+    for osztaly in classes:
+        students = osztaly.tanulok.all()
+        class_total = students.count()
+        class_logged_in = 0
+        
+        students_data = []
+        for student in students:
+            profile = Profile.objects.filter(user=student).first()
+            login_count = profile.login_count if profile else 0
+            
+            has_logged_in = student.last_login is not None
+            if has_logged_in:
+                class_logged_in += 1
+            
+            students_data.append({
+                'id': student.id,
+                'name': get_user_full_name(student),
+                'last_login': student.last_login,
+                'login_count': login_count
+            })
+        
+        per_class_stats.append({
+            'class_id': osztaly.id,
+            'class_name': str(osztaly),
+            'total': class_total,
+            'logged_in': class_logged_in,
+            'never_logged_in': class_total - class_logged_in,
+            'students': sorted(students_data, key=lambda x: (x['last_login'] is None, x['name']))
+        })
+        
+        total_students += class_total
+        total_logged_in += class_logged_in
+    
+    return 200, {
+        'summary': {
+            'total': total_students,
+            'logged_in': total_logged_in,
+            'never_logged_in': total_students - total_logged_in
+        },
+        'per_class': sorted(per_class_stats, key=lambda x: x['class_name'])
+    }
+
+
+# ============================================================================
+# Mulasztas (eKréta Upload) Helper Functions - EXPERIMENTAL
+# ============================================================================
+
+# Helper function for Mulasztas analysis
+def analyze_mulasztas_coverage(user: User, include_igazolt: bool = False) -> dict:
+    """
+    Analyze which student-uploaded Mulasztas records are covered by existing Igazolas records.
+    
+    Args:
+        user: The student user
+        include_igazolt: If True, includes already justified absences
+    
+    Returns:
+        Dictionary with analysis results
+    """
+    from datetime import datetime, time, timedelta
+    
+    # Get all student-uploaded mulasztas records for the user
+    mulasztasok_query = Mulasztas.objects.filter(uploaded_by_student=user)
+    if not include_igazolt:
+        mulasztasok_query = mulasztasok_query.filter(igazolt=False)
+    
+    mulasztasok = list(mulasztasok_query.order_by('-datum', 'ora'))
+    
+    # Get all accepted igazolas records for the user
+    profile = Profile.objects.filter(user=user).first()
+    if not profile:
+        # No profile, no igazolások
+        return {
+            'total_mulasztasok': len(mulasztasok),
+            'igazolt_count': 0,
+            'nem_igazolt_count': len(mulasztasok),
+            'covered_by_igazolas': 0,
+            'not_covered': len(mulasztasok),
+            'mulasztasok': [
+                {
+                    'id': m.id,
+                    'datum': m.datum,
+                    'ora': m.ora,
+                    'tantargy': m.tantargy,
+                    'tema': m.tema,
+                    'tipus': m.tipus,
+                    'igazolt': m.igazolt,
+                    'tanorai_celu_mulasztas': m.tanorai_celu_mulasztas,
+                    'igazolas_tipusa': m.igazolas_tipusa,
+                    'rogzites_datuma': m.rogzites_datuma,
+                    'mulasztas_ok': m.mulasztas_ok,
+                    'mulasztas_statusz': m.mulasztas_statusz,
+                    'uploaded_at': m.uploaded_at,
+                    'matched_igazolas_id': None,
+                    'is_covered': False
+                }
+                for m in mulasztasok
+            ]
+        }
+    
+    # Get accepted AND pending igazolások (to show what could potentially cover the mulasztás)
+    igazolasok = Igazolas.objects.filter(
+        profile=profile,
+        allapot__in=['Elfogadva', 'Függőben']
+    ).order_by('-eleje')
+    
+    # Analyze coverage
+    covered_count = 0
+    igazolt_count = sum(1 for m in mulasztasok if m.igazolt)
+    nem_igazolt_count = len(mulasztasok) - igazolt_count
+    
+    mulasztasok_data = []
+    
+    for mulasztas in mulasztasok:
+        # Convert mulasztas date + ora to datetime range
+        # Assume each lesson is 45 minutes starting at 8:00 AM + (ora * 45 minutes)
+        # This is a rough estimate - adjust based on actual school schedule
+        lesson_start_time = time(8, 0)  # 8:00 AM
+        lesson_duration_minutes = 45
+        
+        # Calculate lesson start datetime
+        lesson_start = datetime.combine(
+            mulasztas.datum,
+            lesson_start_time
+        ) + timedelta(minutes=(mulasztas.ora - 1) * lesson_duration_minutes)
+        
+        lesson_end = lesson_start + timedelta(minutes=lesson_duration_minutes)
+        
+        # Make timezone-aware if needed
+        if timezone.is_naive(lesson_start):
+            lesson_start = timezone.make_aware(lesson_start)
+        if timezone.is_naive(lesson_end):
+            lesson_end = timezone.make_aware(lesson_end)
+        
+        # Check if any igazolas covers this mulasztas
+        matched_igazolas = None
+        is_covered = False
+        
+        for igazolas in igazolasok:
+            # Check if the lesson time overlaps with the igazolas time range
+            if (igazolas.eleje <= lesson_start <= igazolas.vege) or \
+               (igazolas.eleje <= lesson_end <= igazolas.vege) or \
+               (lesson_start <= igazolas.eleje and lesson_end >= igazolas.vege):
+                matched_igazolas = igazolas
+                is_covered = True
+                covered_count += 1
+                break
+        
+        mulasztasok_data.append({
+            'id': mulasztas.id,
+            'datum': mulasztas.datum,
+            'ora': mulasztas.ora,
+            'tantargy': mulasztas.tantargy,
+            'tema': mulasztas.tema,
+            'tipus': mulasztas.tipus,
+            'igazolt': mulasztas.igazolt,
+            'tanorai_celu_mulasztas': mulasztas.tanorai_celu_mulasztas,
+            'igazolas_tipusa': mulasztas.igazolas_tipusa,
+            'rogzites_datuma': mulasztas.rogzites_datuma,
+            'mulasztas_ok': mulasztas.mulasztas_ok,
+            'mulasztas_statusz': mulasztas.mulasztas_statusz,
+            'uploaded_at': mulasztas.uploaded_at,
+            'matched_igazolas_id': matched_igazolas.id if matched_igazolas else None,
+            'is_covered': is_covered
+        })
+    
+    return {
+        'total_mulasztasok': len(mulasztasok),
+        'igazolt_count': igazolt_count,
+        'nem_igazolt_count': nem_igazolt_count,
+        'covered_by_igazolas': covered_count,
+        'not_covered': nem_igazolt_count - covered_count if not include_igazolt else len(mulasztasok) - covered_count,
+        'mulasztasok': mulasztasok_data
+    }

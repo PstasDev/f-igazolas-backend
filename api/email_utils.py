@@ -113,3 +113,105 @@ Igazoláskezelő Rendszer
         logger.error(f"[EMAIL ERROR] Exception type: {type(e).__name__}")
         logger.error(f"[EMAIL ERROR] Exception details: {str(e)}")
         return False
+
+
+def send_password_generated_email(user, password):
+    """
+    Send email with newly generated password.
+    
+    Args:
+        user: Django User object
+        password: The generated password (plaintext)
+        
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    try:
+        logger.debug(f"[EMAIL DEBUG] Attempting to send generated password to {user.email}")
+        
+        subject = '[SZLG Igazoláskezelő] A jelszavát visszaállították'
+        
+        message = f"""
+Kedves {user.get_full_name() or user.username},
+
+A jelszavát egy adminisztrátor visszaállította.
+
+Az új jelszava: {password}
+
+Kérjük, jelentkezzen be, és azonnal változtassa meg a jelszavát.
+
+Bejelentkezés: {settings.FRONTEND_URL if hasattr(settings, 'FRONTEND_URL') else 'https://igazolas.szlg.info'}/login
+
+Ha nem Ön kérte ezt a műveletet, azonnal vegye fel a kapcsolatot adminisztrátorával!
+
+Üdvözlettel,
+SZLG Igazoláskezelő Rendszer
+        """
+        
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            fail_silently=False,
+        )
+        
+        logger.info(f"✓ [EMAIL SUCCESS] Generated password sent to {user.email}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"✗ [EMAIL FAILED] Failed to send generated password to {user.email}: {str(e)}")
+        return False
+
+
+def send_permission_change_email(user, promoted: bool, changed_by):
+    """
+    Send email notification when user permissions change.
+    
+    Args:
+        user: Django User object whose permissions changed
+        promoted: True if promoted to superuser, False if demoted
+        changed_by: User who made the change
+        
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    try:
+        logger.debug(f"[EMAIL DEBUG] Attempting to send permission change notification to {user.email}")
+        
+        subject = '[SZLG Igazoláskezelő] A fiókjának jogosultságai megváltoztak'
+        
+        if promoted:
+            permission_text = "Ön adminisztrátori jogosultságot kapott."
+        else:
+            permission_text = "Az Ön adminisztrátori jogosultságát megvonták."
+        
+        message = f"""
+Kedves {user.get_full_name() or user.username},
+
+A fiókjának jogosultságait {changed_by.get_full_name() or changed_by.username} frissítette.
+
+{permission_text}
+
+A változások azonnal érvényesek.
+
+Ha kérdése van, kérjük, lépjen kapcsolatba a rendszergazdájával.
+
+Üdvözlettel,
+SZLG Igazoláskezelő Rendszer
+        """
+        
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            fail_silently=False,
+        )
+        
+        logger.info(f"✓ [EMAIL SUCCESS] Permission change notification sent to {user.email}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"✗ [EMAIL FAILED] Failed to send permission change notification to {user.email}: {str(e)}")
+        return False

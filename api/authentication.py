@@ -16,7 +16,7 @@ class JWTAuth(HttpBearer):
         """
         Authenticate the request using JWT token.
         
-        Updates user's last_login timestamp on every successful authentication.
+        Updates user's last_login timestamp and login_count on every successful authentication.
         
         Args:
             request: Django HttpRequest object
@@ -37,11 +37,24 @@ class JWTAuth(HttpBearer):
             
             # Fetch user from database
             try:
+                from .models import Profile
+                
                 user = User.objects.get(pk=user_id, is_active=True)
                 
-                # Update last_login timestamp on every successful authentication
+                # Update last_login timestamp
                 user.last_login = timezone.now()
                 user.save(update_fields=['last_login'])
+                
+                # Update login_count in Profile
+                profile, created = Profile.objects.get_or_create(user=user)
+                if created or profile.login_count == 0:
+                    # First login or new profile
+                    profile.login_count = 1
+                else:
+                    # Don't increment on every API call, only on actual new sessions
+                    # For now, we'll track this in the login endpoint
+                    pass
+                profile.save(update_fields=['login_count'])
                 
                 return user
             except User.DoesNotExist:

@@ -304,3 +304,175 @@ class OverrideUpdateRequest(Schema):
 class SuperuserCheckResponse(Schema):
     is_superuser: bool
     username: str
+
+
+# ============================================================================
+# Admin Phase 1 Schemas
+# ============================================================================
+
+# Feature #1: Password Management
+class GeneratePasswordResponse(Schema):
+    password: Optional[str] = None  # Only returned if send_email=false
+    message: str
+    email_sent: bool
+
+
+class ResetPasswordRequest(Schema):
+    new_password: str
+    send_email: bool = False
+
+
+class ResetPasswordResponse(Schema):
+    message: str
+    email_sent: bool
+
+
+# Feature #3: Teacher Assignment
+class TeacherAssignmentRequest(Schema):
+    teacher_id: int
+
+
+class TeacherInfo(Schema):
+    id: int
+    username: str
+    name: str
+    is_superuser: bool = False
+
+
+class ClassInfo(Schema):
+    id: int
+    name: str
+
+
+class AssignTeacherResponse(Schema):
+    message: str
+    teacher: TeacherInfo
+    class_info: ClassInfo
+
+
+class RemoveTeacherResponse(Schema):
+    message: str
+    removed: bool
+
+
+class MoveOsztalyfonokRequest(Schema):
+    class_id: int
+
+
+class MoveOsztalyfonokResponse(Schema):
+    message: str
+    previous_class: Optional[ClassInfo] = None
+    new_class: ClassInfo
+
+
+class TeacherWithAssignmentDate(Schema):
+    id: int
+    username: str
+    name: str
+    is_superuser: bool
+    assigned_date: Optional[datetime] = None
+
+
+class GetTeachersResponse(Schema):
+    teachers: List[TeacherWithAssignmentDate]
+
+
+# Feature #6: Permissions Management
+class UserPermissionInfo(Schema):
+    id: int
+    username: str
+    is_superuser: bool
+
+
+class PromoteDemoteResponse(Schema):
+    message: str
+    user: UserPermissionInfo
+
+
+class PermissionChangeHistory(Schema):
+    changed_by: str
+    changed_at: datetime
+    action: str  # 'promoted' or 'demoted'
+    previous_value: bool
+    new_value: bool
+
+
+class UserPermissionsResponse(Schema):
+    user_id: int
+    username: str
+    is_superuser: bool
+    is_staff: bool
+    permissions: List[str] = []
+    change_history: List[PermissionChangeHistory]
+
+
+# Feature #4: Student Login Statistics
+class StudentLoginInfo(Schema):
+    id: int
+    name: str
+    last_login: Optional[datetime] = None
+    login_count: int
+
+
+class ClassLoginStats(Schema):
+    class_id: int
+    class_name: str
+    total: int
+    logged_in: int
+    never_logged_in: int
+    students: List[StudentLoginInfo]
+
+
+class LoginStatsSummary(Schema):
+    total: int
+    logged_in: int
+    never_logged_in: int
+
+
+class LoginStatsResponse(Schema):
+    summary: LoginStatsSummary
+    per_class: List[ClassLoginStats]
+
+
+# ============================================================================
+# Mulasztás (eKréta Upload) Schemas - EXPERIMENTAL
+# ============================================================================
+
+class MulasztasUploadSchema(Schema):
+    """Extended Mulasztas schema with analysis fields for student uploads"""
+    id: int
+    datum: DateType
+    ora: int
+    tantargy: str
+    tema: str
+    tipus: str
+    igazolt: bool
+    tanorai_celu_mulasztas: bool
+    igazolas_tipusa: Optional[str] = None
+    rogzites_datuma: DateType
+    mulasztas_ok: Optional[str] = None
+    mulasztas_statusz: Optional[str] = None
+    uploaded_at: Optional[datetime] = None
+    # Analysis fields
+    matched_igazolas_id: Optional[int] = None
+    is_covered: Optional[bool] = None
+
+
+class MulasztasAnalysisResult(Schema):
+    total_mulasztasok: int
+    igazolt_count: int
+    nem_igazolt_count: int
+    covered_by_igazolas: int
+    not_covered: int
+    mulasztasok: List[MulasztasUploadSchema]
+
+
+class UploadMulasztasResponse(Schema):
+    success: bool
+    message: str
+    total_processed: int
+    created_count: int
+    updated_count: int
+    error_count: int
+    errors: List[str]
+    analysis: Optional[MulasztasAnalysisResult] = None
