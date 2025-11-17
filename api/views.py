@@ -35,6 +35,9 @@ from .schemas import (
     TeacherAssignmentRequest, AssignTeacherResponse, RemoveTeacherResponse,
     MoveOsztalyfonokRequest, MoveOsztalyfonokResponse, GetTeachersResponse,
     PromoteDemoteResponse, UserPermissionsResponse, LoginStatsResponse,
+    # Admin Phase 2 schemas
+    ActivityHeatmapResponse, ClassesOverviewResponse, TeacherWorkloadResponse,
+    TeacherActivityResponse, ApprovalRatesResponse,
     # Mulasztas upload schemas (EXPERIMENTAL)
     MulasztasUploadSchema, MulasztasAnalysisResult, UploadMulasztasResponse
 )
@@ -3104,4 +3107,489 @@ def analyze_mulasztas_coverage(user: User, include_igazolt: bool = False) -> dic
         'covered_by_igazolas': covered_count,
         'not_covered': nem_igazolt_count - covered_count if not include_igazolt else len(mulasztasok) - covered_count,
         'mulasztasok': mulasztasok_data
+    }
+
+
+# ============================================================================
+# Admin Phase 2 Endpoints - Analytics & Monitoring
+# ============================================================================
+
+# Feature #2: Class Activity Heatmap
+
+@api.get("/admin/classes/activity-heatmap", response={200: ActivityHeatmapResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Admin - Analytics"])
+def get_class_activity_heatmap(request, from_date: str, to_date: str, metric_type: str = 'submissions'):
+    """
+    Get activity heatmap data for all classes.
+    
+    Metric types: 'submissions', 'approvals', 'logins'
+    Returns intensity-coded data points for visualization.
+    """
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can view analytics'
+        }
+    
+    from datetime import datetime, timedelta
+    from django.db.models import Count, Q
+    
+    start = datetime.fromisoformat(from_date).date()
+    end = datetime.fromisoformat(to_date).date()
+    
+    # Generate date range
+    dates = []
+    current = start
+    while current <= end:
+        dates.append(current)
+        current += timedelta(days=1)
+    
+    classes = Osztaly.objects.all()
+    classes_data = []
+    
+    for osztaly in classes:
+        activity_data = []
+        
+        for date in dates:
+            if metric_type == 'submissions':
+                count = Igazolas.objects.filter(
+                    profile__user__in=osztaly.tanulok.all(),
+                    rogzites_datuma=date
+                ).count()
+            elif metric_type == 'approvals':
+                count = Igazolas.objects.filter(
+                    profile__user__in=osztaly.tanulok.all(),
+                    rogzites_datuma=date,
+                    allapot='Elfogadva'
+                ).count()
+            else:  # logins
+                count = Profile.objects.filter(
+                    user__in=osztaly.tanulok.all(),
+                    user__last_login__date=date
+                ).count()
+            
+            # Calculate intensity (0-5 scale)
+            if count == 0:
+                intensity = 0
+            elif count <= 2:
+                intensity = 1
+            elif count <= 5:
+                intensity = 2
+            elif count <= 10:
+                intensity = 3
+            elif count <= 20:
+                intensity = 4
+            else:
+                intensity = 5
+            
+            activity_data.append({
+                'date': date,
+                'value': count,
+                'intensity': intensity
+            })
+        
+        classes_data.append({
+            'id': osztaly.id,
+            'name': str(osztaly),
+            'data': activity_data
+        })
+    
+    return {
+        'dates': dates,
+        'classes': classes_data
+    }
+
+
+@api.get("/admin/classes/overview-stats", response={200: ClassesOverviewResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Admin - Analytics"])
+def get_classes_overview_stats(request):
+    """
+    Get overview statistics for all classes.
+    """
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can view analytics'
+        }
+    
+    from django.db.models import Count, Q, Max
+    
+    classes = Osztaly.objects.all()
+    classes_stats = []
+    
+    for osztaly in classes:
+        student_ids = osztaly.tanulok.values_list('id', flat=True)
+        
+        # Get stats
+        total_students = len(student_ids)
+        active_students = Igazolas.objects.filter(
+            profile__user_id__in=student_ids
+        ).values('profile__user_id').distinct().count()
+        
+        pending_count = Igazolas.objects.filter(
+            profile__user_id__in=student_ids,
+            allapot='Folyamatban'
+        ).count()
+        
+        total_igazolasok = Igazolas.objects.filter(
+            profile__user_id__in=student_ids
+        ).count()
+        
+        approved = Igazolas.objects.filter(
+            profile__user_id__in=student_ids,
+            allapot='Elfogadva'
+        ).count()
+        
+        approval_rate = (approved / total_igazolasok * 100) if total_igazolasok > 0 else 0.0
+        
+        last_activity = Igazolas.objects.filter(
+            profile__user_id__in=student_ids
+        ).aggregate(Max('rogzites_datuma'))['rogzites_datuma__max']
+        
+        classes_stats.append({
+            'id': osztaly.id,
+            'name': str(osztaly),
+            'total_students': total_students,
+            'active_students': active_students,
+            'pending_count': pending_count,
+            'approval_rate': round(approval_rate, 2),
+            'last_activity': last_activity
+        })
+    
+    return {
+        'classes': classes_stats
+    }
+
+
+# Feature #5: Teacher Workload Dashboard
+
+@api.get("/admin/teachers/workload", response={200: TeacherWorkloadResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Admin - Analytics"])
+def get_teacher_workload(request):
+    """
+    Get workload statistics for all teachers.
+    """
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can view analytics'
+        }
+    
+    from datetime import date
+    
+    # Get all teachers (users assigned to classes)
+    teachers = User.objects.filter(osztalyfonokok__isnull=False).distinct()
+    teacher_workloads = []
+    
+    for teacher in teachers:
+        teacher_classes = Osztaly.objects.filter(osztalyfonokok=teacher)
+        class_names = [str(c) for c in teacher_classes]
+        
+        # Get all students from teacher's classes
+        student_ids = []
+        for osztaly in teacher_classes:
+            student_ids.extend(osztaly.tanulok.values_list('id', flat=True))
+        
+        total_students = len(set(student_ids))
+        
+        # Pending count
+        pending_count = Igazolas.objects.filter(
+            profile__user_id__in=student_ids,
+            allapot='Folyamatban'
+        ).count()
+        
+        # Today's stats
+        today = date.today()
+        approved_today = Igazolas.objects.filter(
+            profile__user_id__in=student_ids,
+            allapot='Elfogadva',
+            rogzites_datuma=today
+        ).count()
+        
+        rejected_today = Igazolas.objects.filter(
+            profile__user_id__in=student_ids,
+            allapot='Elutasítva',
+            rogzites_datuma=today
+        ).count()
+        
+        # TODO: Calculate avg_response_time_hours when timestamp tracking is added
+        avg_response_time = None
+        
+        teacher_workloads.append({
+            'id': teacher.id,
+            'name': get_user_full_name(teacher),
+            'classes': class_names,
+            'total_students': total_students,
+            'pending_count': pending_count,
+            'approved_today': approved_today,
+            'rejected_today': rejected_today,
+            'avg_response_time_hours': avg_response_time
+        })
+    
+    return {
+        'teachers': teacher_workloads
+    }
+
+
+# Feature #7: Teacher Activity Monitoring
+
+@api.get("/admin/teachers/{teacher_id}/activity", response={200: TeacherActivityResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Analytics"])
+def get_teacher_activity(request, teacher_id: int, from_date: str, to_date: str):
+    """
+    Get detailed activity for a specific teacher.
+    """
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can view analytics'
+        }
+    
+    from datetime import datetime
+    from django.db.models import Count, Q
+    
+    try:
+        teacher = User.objects.get(id=teacher_id)
+    except User.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': 'Teacher not found'
+        }
+    
+    start = datetime.fromisoformat(from_date).date()
+    end = datetime.fromisoformat(to_date).date()
+    
+    # Get teacher's classes
+    teacher_classes = Osztaly.objects.filter(osztalyfonokok=teacher)
+    student_ids = []
+    for osztaly in teacher_classes:
+        student_ids.extend(osztaly.tanulok.values_list('id', flat=True))
+    
+    # Get profile for login count
+    profile = Profile.objects.filter(user=teacher).first()
+    login_count = profile.login_count if profile else 0
+    
+    # Actions breakdown
+    approved = Igazolas.objects.filter(
+        profile__user_id__in=student_ids,
+        allapot='Elfogadva',
+        rogzites_datuma__range=[start, end]
+    ).count()
+    
+    rejected = Igazolas.objects.filter(
+        profile__user_id__in=student_ids,
+        allapot='Elutasítva',
+        rogzites_datuma__range=[start, end]
+    ).count()
+    
+    commented = Igazolas.objects.filter(
+        profile__user_id__in=student_ids,
+        megjegyzes_tanar__isnull=False,
+        rogzites_datuma__range=[start, end]
+    ).exclude(megjegyzes_tanar='').count()
+    
+    total_actions = approved + rejected + commented
+    
+    # Activity timeline
+    timeline_data = Igazolas.objects.filter(
+        profile__user_id__in=student_ids,
+        rogzites_datuma__range=[start, end]
+    ).extra(
+        select={'date': 'DATE(rogzites_datuma)'}
+    ).values('date', 'allapot').annotate(count=Count('id'))
+    
+    # Group by date
+    timeline = {}
+    for item in timeline_data:
+        date = item['date']
+        if date not in timeline:
+            timeline[date] = {'date': date, 'approved': 0, 'rejected': 0, 'other': 0}
+        
+        if item['allapot'] == 'Elfogadva':
+            timeline[date]['approved'] = item['count']
+        elif item['allapot'] == 'Elutasítva':
+            timeline[date]['rejected'] = item['count']
+        else:
+            timeline[date]['other'] += item['count']
+    
+    # Convert to list format
+    activity_timeline = []
+    for date, data in sorted(timeline.items()):
+        if data['approved'] > 0:
+            activity_timeline.append({'date': date, 'action_type': 'approved', 'count': data['approved']})
+        if data['rejected'] > 0:
+            activity_timeline.append({'date': date, 'action_type': 'rejected', 'count': data['rejected']})
+        if data['other'] > 0:
+            activity_timeline.append({'date': date, 'action_type': 'other', 'count': data['other']})
+    
+    return {
+        'user': {
+            'id': teacher.id,
+            'username': teacher.username,
+            'first_name': teacher.first_name,
+            'last_name': teacher.last_name,
+            'email': teacher.email
+        },
+        'login_count': login_count,
+        'total_actions': total_actions,
+        'actions_breakdown': {
+            'approved': approved,
+            'rejected': rejected,
+            'commented': commented
+        },
+        'activity_timeline': activity_timeline
+    }
+
+
+# Feature #20: Approval Rate Analysis
+
+@api.get("/admin/analytics/approval-rates", response={200: ApprovalRatesResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Admin - Analytics"])
+def get_approval_rates(request, from_date: str, to_date: str, group_by: str = 'teacher'):
+    """
+    Get approval rate analytics.
+    
+    group_by options: 'teacher', 'type', 'class', 'all'
+    """
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can view analytics'
+        }
+    
+    from datetime import datetime, timedelta
+    from django.db.models import Count, Q
+    
+    start = datetime.fromisoformat(from_date).date()
+    end = datetime.fromisoformat(to_date).date()
+    
+    # Overall rate
+    total = Igazolas.objects.filter(rogzites_datuma__range=[start, end]).count()
+    approved = Igazolas.objects.filter(
+        rogzites_datuma__range=[start, end],
+        allapot='Elfogadva'
+    ).count()
+    
+    overall_rate = (approved / total * 100) if total > 0 else 0.0
+    
+    # By teacher
+    by_teacher = []
+    teachers = User.objects.filter(osztalyfonokok__isnull=False).distinct()
+    for teacher in teachers:
+        teacher_classes = Osztaly.objects.filter(osztalyfonokok=teacher)
+        student_ids = []
+        for osztaly in teacher_classes:
+            student_ids.extend(osztaly.tanulok.values_list('id', flat=True))
+        
+        teacher_total = Igazolas.objects.filter(
+            profile__user_id__in=student_ids,
+            rogzites_datuma__range=[start, end]
+        ).count()
+        
+        teacher_approved = Igazolas.objects.filter(
+            profile__user_id__in=student_ids,
+            rogzites_datuma__range=[start, end],
+            allapot='Elfogadva'
+        ).count()
+        
+        teacher_rejected = Igazolas.objects.filter(
+            profile__user_id__in=student_ids,
+            rogzites_datuma__range=[start, end],
+            allapot='Elutasítva'
+        ).count()
+        
+        if teacher_total > 0:
+            by_teacher.append({
+                'teacher_id': teacher.id,
+                'teacher_name': get_user_full_name(teacher),
+                'total': teacher_total,
+                'approved': teacher_approved,
+                'rejected': teacher_rejected,
+                'approval_rate': round(teacher_approved / teacher_total * 100, 2)
+            })
+    
+    # By type
+    by_type = []
+    types = IgazolasTipus.objects.all()
+    for igazolas_type in types:
+        type_total = Igazolas.objects.filter(
+            tipus=igazolas_type,
+            rogzites_datuma__range=[start, end]
+        ).count()
+        
+        type_approved = Igazolas.objects.filter(
+            tipus=igazolas_type,
+            rogzites_datuma__range=[start, end],
+            allapot='Elfogadva'
+        ).count()
+        
+        type_rejected = Igazolas.objects.filter(
+            tipus=igazolas_type,
+            rogzites_datuma__range=[start, end],
+            allapot='Elutasítva'
+        ).count()
+        
+        if type_total > 0:
+            by_type.append({
+                'type_id': igazolas_type.id,
+                'type_name': igazolas_type.nev,
+                'total': type_total,
+                'approved': type_approved,
+                'rejected': type_rejected,
+                'approval_rate': round(type_approved / type_total * 100, 2)
+            })
+    
+    # By class
+    by_class = []
+    classes = Osztaly.objects.all()
+    for osztaly in classes:
+        student_ids = osztaly.tanulok.values_list('id', flat=True)
+        
+        class_total = Igazolas.objects.filter(
+            profile__user_id__in=student_ids,
+            rogzites_datuma__range=[start, end]
+        ).count()
+        
+        class_approved = Igazolas.objects.filter(
+            profile__user_id__in=student_ids,
+            rogzites_datuma__range=[start, end],
+            allapot='Elfogadva'
+        ).count()
+        
+        class_rejected = Igazolas.objects.filter(
+            profile__user_id__in=student_ids,
+            rogzites_datuma__range=[start, end],
+            allapot='Elutasítva'
+        ).count()
+        
+        if class_total > 0:
+            by_class.append({
+                'class_id': osztaly.id,
+                'class_name': str(osztaly),
+                'total': class_total,
+                'approved': class_approved,
+                'rejected': class_rejected,
+                'approval_rate': round(class_approved / class_total * 100, 2)
+            })
+    
+    # Trend over time (daily)
+    trend = []
+    current = start
+    while current <= end:
+        day_total = Igazolas.objects.filter(rogzites_datuma=current).count()
+        day_approved = Igazolas.objects.filter(
+            rogzites_datuma=current,
+            allapot='Elfogadva'
+        ).count()
+        
+        if day_total > 0:
+            trend.append({
+                'date': current,
+                'approval_rate': round(day_approved / day_total * 100, 2),
+                'total': day_total
+            })
+        
+        current += timedelta(days=1)
+    
+    return {
+        'overall_rate': round(overall_rate, 2),
+        'by_teacher': by_teacher,
+        'by_type': by_type,
+        'by_class': by_class,
+        'trend': trend
     }

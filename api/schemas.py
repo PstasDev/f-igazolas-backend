@@ -476,3 +476,118 @@ class UploadMulasztasResponse(Schema):
     error_count: int
     errors: List[str]
     analysis: Optional[MulasztasAnalysisResult] = None
+
+
+# ============================================================================
+# Admin Phase 2 Schemas - Analytics & Monitoring
+# ============================================================================
+
+# Feature #2: Class Activity Heatmap
+class ActivityDataPoint(Schema):
+    date: DateType
+    value: int
+    intensity: int  # 0-5 scale for visualization
+
+
+class ClassActivityData(Schema):
+    id: int
+    name: str
+    data: List[ActivityDataPoint]
+
+
+class ActivityHeatmapResponse(Schema):
+    dates: List[DateType]
+    classes: List[ClassActivityData]
+
+
+class ClassOverviewStats(Schema):
+    id: int
+    name: str
+    total_students: int
+    active_students: int
+    pending_count: int
+    approval_rate: float
+    last_activity: Optional[datetime] = None
+
+
+class ClassesOverviewResponse(Schema):
+    classes: List[ClassOverviewStats]
+
+
+# Feature #5: Teacher Workload Dashboard
+class TeacherWorkloadInfo(Schema):
+    id: int
+    name: str
+    classes: List[str]
+    total_students: int
+    pending_count: int
+    approved_today: int
+    rejected_today: int
+    avg_response_time_hours: Optional[float] = None
+
+
+class TeacherWorkloadResponse(Schema):
+    teachers: List[TeacherWorkloadInfo]
+
+
+# Feature #7: Teacher Activity Monitoring
+class ActivityTimelinePoint(Schema):
+    date: DateType
+    action_type: str
+    count: int
+
+
+class ActionsBreakdown(Schema):
+    approved: int
+    rejected: int
+    commented: int
+
+
+class TeacherActivityResponse(Schema):
+    user: UserSchema
+    login_count: int
+    total_actions: int
+    actions_breakdown: ActionsBreakdown
+    activity_timeline: List[ActivityTimelinePoint]
+
+
+# Feature #20: Approval Rate Analysis
+class ApprovalRateByTeacher(Schema):
+    teacher_id: int
+    teacher_name: str
+    total: int
+    approved: int
+    rejected: int
+    approval_rate: float
+
+
+class ApprovalRateByType(Schema):
+    type_id: int
+    type_name: str
+    total: int
+    approved: int
+    rejected: int
+    approval_rate: float
+
+
+class ApprovalRateByClass(Schema):
+    class_id: int
+    class_name: str
+    total: int
+    approved: int
+    rejected: int
+    approval_rate: float
+
+
+class TrendDataPoint(Schema):
+    date: DateType
+    approval_rate: float
+    total: int
+
+
+class ApprovalRatesResponse(Schema):
+    overall_rate: float
+    by_teacher: List[ApprovalRateByTeacher]
+    by_type: List[ApprovalRateByType]
+    by_class: List[ApprovalRateByClass]
+    trend: List[TrendDataPoint]
