@@ -3061,10 +3061,19 @@ def analyze_mulasztas_coverage(user: User, include_igazolt: bool = False) -> dic
         is_covered = False
         
         for igazolas in igazolasok:
+            # Ensure igazolas times are timezone-aware for comparison
+            igazolas_eleje = igazolas.eleje
+            igazolas_vege = igazolas.vege
+            
+            if timezone.is_naive(igazolas_eleje):
+                igazolas_eleje = timezone.make_aware(igazolas_eleje)
+            if timezone.is_naive(igazolas_vege):
+                igazolas_vege = timezone.make_aware(igazolas_vege)
+            
             # Check if the lesson time overlaps with the igazolas time range
-            if (igazolas.eleje <= lesson_start <= igazolas.vege) or \
-               (igazolas.eleje <= lesson_end <= igazolas.vege) or \
-               (lesson_start <= igazolas.eleje and lesson_end >= igazolas.vege):
+            if (igazolas_eleje <= lesson_start <= igazolas_vege) or \
+               (igazolas_eleje <= lesson_end <= igazolas_vege) or \
+               (lesson_start <= igazolas_eleje and lesson_end >= igazolas_vege):
                 matched_igazolas = igazolas
                 is_covered = True
                 covered_count += 1
