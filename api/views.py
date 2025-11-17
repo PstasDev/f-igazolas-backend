@@ -3044,19 +3044,17 @@ def analyze_mulasztas_coverage(user: User, include_igazolt: bool = False) -> dic
         lesson_start_time = time(8, 0)  # 8:00 AM
         lesson_duration_minutes = 45
         
-        # Calculate lesson start datetime
-        lesson_start = datetime.combine(
+        # Calculate lesson start datetime (timezone-naive)
+        lesson_start_naive = datetime.combine(
             mulasztas.datum,
             lesson_start_time
         ) + timedelta(minutes=(mulasztas.ora - 1) * lesson_duration_minutes)
         
-        lesson_end = lesson_start + timedelta(minutes=lesson_duration_minutes)
+        lesson_end_naive = lesson_start_naive + timedelta(minutes=lesson_duration_minutes)
         
-        # Make timezone-aware if needed
-        if timezone.is_naive(lesson_start):
-            lesson_start = timezone.make_aware(lesson_start)
-        if timezone.is_naive(lesson_end):
-            lesson_end = timezone.make_aware(lesson_end)
+        # Make timezone-aware
+        lesson_start = timezone.make_aware(lesson_start_naive)
+        lesson_end = timezone.make_aware(lesson_end_naive)
         
         # Check if any igazolas covers this mulasztas
         matched_igazolas = None
