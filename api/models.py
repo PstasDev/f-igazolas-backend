@@ -11,6 +11,14 @@ class Profile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     frontendConfig = models.JSONField(default=dict, blank=True)  # Felhasználói frontend beállítások tárolása JSON formátumban, akármit tárolhat benne a frontend, mivel nincs backend logikához kötve
     login_count = models.IntegerField(default=0)  # Track total number of successful logins
+    
+    # Feature #25: Stúdiós Support
+    is_studios = models.BooleanField(default=False, verbose_name="Stúdiós", help_text="A diák stúdiós programban vesz részt")
+    
+    # Feature #14: Academic Year Archival
+    archived = models.BooleanField(default=False, verbose_name="Archivált", help_text="A profil archivált státuszban van")
+    archive_date = models.DateTimeField(null=True, blank=True, verbose_name="Archiválás dátuma")
+    academic_year = models.CharField(max_length=20, null=True, blank=True, verbose_name="Tanév", help_text="Pl. 2024/2025")
 
     def osztalyom(self):
         return Osztaly.objects.filter(tanulok=self.user).first() or Osztaly.objects.filter(osztalyfonokok=self.user).first()
@@ -69,6 +77,14 @@ class Osztaly(models.Model):
     osztalyfonokok = models.ManyToManyField(User, related_name='osztalyfonokok', blank=True)
     nem_fogadott_igazolas_tipusok = models.ManyToManyField('IgazolasTipus', blank=True, related_name='nem_fogado_osztalyok')
 
+    # Feature #27: Class-Specific Period Configuration
+    enabled_periods = models.JSONField(default=list, blank=True, verbose_name="Engedélyezett órák", help_text="Lista az engedélyezett tanórai időszakokról (pl. [1,2,3,4,5,6,7])")
+    
+    # Feature #14: Academic Year Archival
+    archived = models.BooleanField(default=False, verbose_name="Archivált", help_text="Az osztály archivált státuszban van")
+    archive_date = models.DateTimeField(null=True, blank=True, verbose_name="Archiválás dátuma")
+    academic_year = models.CharField(max_length=20, null=True, blank=True, verbose_name="Tanév", help_text="Pl. 2024/2025")
+
     def osztaly_igazolasai(self):
         return Igazolas.objects.filter(profile__user__in=self.tanulok.all())
 
@@ -108,6 +124,12 @@ class Mulasztas(models.Model):
     mulasztas_ok = models.CharField(max_length=300, blank=True, null=True, verbose_name="Mulasztás oka")
     mulasztas_statusz = models.CharField(max_length=200, blank=True, null=True, verbose_name="Mulasztás státusz")
     uploaded_at = models.DateTimeField(null=True, blank=True, verbose_name="Feltöltve (eKréta)")
+    
+    # Feature #24: Mulasztas Import & Comparison
+    matched_igazolas = models.ForeignKey('Igazolas', on_delete=models.SET_NULL, null=True, blank=True,
+                                        related_name='matched_mulasztasok',
+                                        verbose_name="Párosított igazolás",
+                                        help_text="Az igazolás ami fedezi ezt a mulasztást")
 
     def __str__(self):
         student = self.uploaded_by_student.username if self.uploaded_by_student else "System"
@@ -128,6 +150,12 @@ class IgazolasTipus(models.Model):
 
     # Iskolaérdekű-e? - Ha a tanár el akarná utasítani az igazolást, de iskolaérdekű, akkor popup, hogy biztosan elutasítja-e
     iskolaerdeku = models.BooleanField(default=False)
+    
+    # Feature #25: Group Absences Support
+    supports_group_absence = models.BooleanField(default=False, verbose_name="Csoportos hiányzást támogat", 
+                                                 help_text="Lehetővé teszi több diák párhuzamos igazolását ugyanarra az eseményre")
+    requires_studios = models.BooleanField(default=False, verbose_name="Stúdiós szükséges", 
+                                          help_text="Csak stúdiós diákok használhatják ezt az igazolás típust")
 
     def __str__(self):
         return self.nev
@@ -166,6 +194,21 @@ class Igazolas(models.Model):
 
     # BKK Verification - JSON field for BKK related data
     bkk_verification = models.JSONField(null=True, blank=True)
+    
+    # Feature #25: Group Absences Support
+    group_id = models.UUIDField(null=True, blank=True, verbose_name="Csoport azonosító", 
+                                help_text="UUID amely összeköti a csoportos igazolásokat")
+    is_group_leader = models.BooleanField(default=False, verbose_name="Csoport vezető", 
+                                         help_text="Az igazolást létrehozó diák")
+    group_member_count = models.IntegerField(default=1, verbose_name="Csoport létszám")
+    created_by_group_leader = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                               related_name='created_group_igazolasok',
+                                               verbose_name="Létrehozta (csoport vezető)",
+                                               help_text="A csoportos igazolást létrehozó felhasználó")
+    
+    # Feature #14: Academic Year Archival
+    archived = models.BooleanField(default=False, verbose_name="Archivált", help_text="Az igazolás archivált státuszban van")
+    academic_year = models.CharField(max_length=20, null=True, blank=True, verbose_name="Tanév", help_text="Pl. 2024/2025")
 
     # Tanár tölti ki
 
@@ -510,3 +553,84 @@ class Override(models.Model):
         verbose_name = "Kivétel (Override)"
         verbose_name_plural = "Kivételek (Overrides)"
         ordering = ['date']
+
+
+class APIMetrics(models.Model):
+    """
+    Model to store API performance metrics.
+    Tracks endpoint usage, response times, and error rates.
+    """
+    endpoint_path = models.CharField(max_length=500, verbose_name="Endpoint Path")
+    http_method = models.CharField(max_length=10, verbose_name="HTTP Method")
+    avg_response_ms = models.FloatField(verbose_name="Average Response Time (ms)")
+    request_count = models.IntegerField(default=0, verbose_name="Request Count")
+    error_count = models.IntegerField(default=0, verbose_name="Error Count")
+    p95_response_ms = models.FloatField(null=True, blank=True, verbose_name="95th Percentile Response Time (ms)")
+    recorded_at = models.DateTimeField(auto_now_add=True, verbose_name="Recorded At")
+    
+    # Store detailed metrics as JSON
+    detailed_metrics = models.JSONField(
+        default=dict, 
+        blank=True,
+        verbose_name="Detailed Metrics",
+        help_text="Additional metrics data in JSON format"
+    )
+    
+    def __str__(self):
+        return f"{self.http_method} {self.endpoint_path} - {self.request_count} requests"
+    
+    class Meta:
+        verbose_name = "API Metrika"
+        verbose_name_plural = "API Metrikák"
+        ordering = ['-recorded_at']
+        indexes = [
+            models.Index(fields=['endpoint_path', 'http_method']),
+            models.Index(fields=['-recorded_at']),
+        ]
+
+
+class ImpersonationLog(models.Model):
+    """
+    Model to log admin impersonation sessions.
+    Tracks when admins view the system as other users.
+    """
+    admin_user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='impersonation_sessions_as_admin',
+        verbose_name="Admin Felhasználó"
+    )
+    impersonated_user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='impersonation_sessions_as_target',
+        verbose_name="Megszemélyesített Felhasználó"
+    )
+    start_time = models.DateTimeField(auto_now_add=True, verbose_name="Kezdés Időpontja")
+    end_time = models.DateTimeField(null=True, blank=True, verbose_name="Befejezés Időpontja")
+    is_active = models.BooleanField(default=True, verbose_name="Aktív")
+    
+    # Track actions performed during impersonation
+    actions_performed = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name="Elvégzett Műveletek",
+        help_text="List of actions performed during impersonation"
+    )
+    
+    # Additional metadata
+    ip_address = models.GenericIPAddressField(null=True, blank=True, verbose_name="IP Cím")
+    user_agent = models.CharField(max_length=500, null=True, blank=True, verbose_name="User Agent")
+    
+    def __str__(self):
+        status = "Aktív" if self.is_active else "Befejezett"
+        return f"{self.admin_user.username} → {self.impersonated_user.username} ({status})"
+    
+    class Meta:
+        verbose_name = "Impersonation Log"
+        verbose_name_plural = "Impersonation Logs"
+        ordering = ['-start_time']
+        indexes = [
+            models.Index(fields=['admin_user', '-start_time']),
+            models.Index(fields=['is_active']),
+        ]

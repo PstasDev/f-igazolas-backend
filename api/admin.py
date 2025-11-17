@@ -1,7 +1,10 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
-from .models import Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas, SystemMessage, TanitasiSzunet, Override
+from .models import (
+    Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas, 
+    SystemMessage, TanitasiSzunet, Override, APIMetrics, ImpersonationLog
+)
 
 
 # Custom filter for last_login that excludes nulls
@@ -48,10 +51,27 @@ admin.site.register(User, UserAdmin)
 # Profile Admin
 @admin.register(Profile)
 class ProfileAdmin(admin.ModelAdmin):
-    list_display = ['id', 'user', 'get_osztaly']
+    list_display = ['id', 'user', 'get_osztaly', 'is_studios', 'archived', 'login_count']
     search_fields = ['user__username', 'user__first_name', 'user__last_name']
-    list_filter = []
+    list_filter = ['is_studios', 'archived']
     raw_id_fields = ['user']
+    
+    fieldsets = (
+        ('Alapadatok', {
+            'fields': ('user', 'login_count')
+        }),
+        ('Stúdiós & Speciális', {
+            'fields': ('is_studios',)
+        }),
+        ('Archiválás', {
+            'fields': ('archived', 'archive_date', 'academic_year'),
+            'classes': ('collapse',)
+        }),
+        ('Frontend konfiguráció', {
+            'fields': ('frontendConfig',),
+            'classes': ('collapse',)
+        }),
+    )
     
     def get_osztaly(self, obj):
         osztaly = obj.osztalyom()
@@ -62,10 +82,30 @@ class ProfileAdmin(admin.ModelAdmin):
 # Osztaly Admin
 @admin.register(Osztaly)
 class OsztalyAdmin(admin.ModelAdmin):
-    list_display = ['id', '__str__', 'tagozat', 'kezdes_eve', 'get_tanulok_count', 'get_osztalyfonokok_count']
-    list_filter = ['tagozat', 'kezdes_eve']
+    list_display = ['id', '__str__', 'tagozat', 'kezdes_eve', 'get_tanulok_count', 'get_osztalyfonokok_count', 'archived']
+    list_filter = ['tagozat', 'kezdes_eve', 'archived']
     search_fields = ['tagozat']
     filter_horizontal = ['tanulok', 'osztalyfonokok', 'nem_fogadott_igazolas_tipusok']
+    
+    fieldsets = (
+        ('Alapadatok', {
+            'fields': ('tagozat', 'kezdes_eve')
+        }),
+        ('Tanulók és Tanárok', {
+            'fields': ('tanulok', 'osztalyfonokok')
+        }),
+        ('Igazolás beállítások', {
+            'fields': ('nem_fogadott_igazolas_tipusok',)
+        }),
+        ('Órarend konfiguráció', {
+            'fields': ('enabled_periods',),
+            'description': 'JSON lista az engedélyezett tanórai időszakokról (pl. [1,2,3,4,5,6,7])'
+        }),
+        ('Archiválás', {
+            'fields': ('archived', 'archive_date', 'academic_year'),
+            'classes': ('collapse',)
+        }),
+    )
     
     def get_tanulok_count(self, obj):
         return obj.tanulok.count()
@@ -89,21 +129,34 @@ class MulasztasAdmin(admin.ModelAdmin):
 # IgazolasTipus Admin
 @admin.register(IgazolasTipus)
 class IgazolasTipusAdmin(admin.ModelAdmin):
-    list_display = ['id', 'nev', 'beleszamit', 'iskolaerdeku']
-    list_filter = ['beleszamit', 'iskolaerdeku']
+    list_display = ['id', 'nev', 'beleszamit', 'iskolaerdeku', 'supports_group_absence', 'requires_studios']
+    list_filter = ['beleszamit', 'iskolaerdeku', 'supports_group_absence', 'requires_studios']
     search_fields = ['nev', 'leiras']
+    
+    fieldsets = (
+        ('Alapadatok', {
+            'fields': ('nev', 'leiras')
+        }),
+        ('Beállítások', {
+            'fields': ('beleszamit', 'iskolaerdeku')
+        }),
+        ('Csoportos & Speciális', {
+            'fields': ('supports_group_absence', 'requires_studios'),
+            'description': 'Csoportos hiányzás támogatás és stúdiós követelmények'
+        }),
+    )
 
 
 # Igazolas Admin
 @admin.register(Igazolas)
 class IgazolasAdmin(admin.ModelAdmin):
-    list_display = ['id', 'get_student', 'get_osztaly', 'eleje', 'vege', 'tipus', 'allapot', 'get_megjegyzes_diak', 'diak', 'ftv', 'korrigalt', 'rogzites_datuma']
-    list_filter = ['allapot', 'diak', 'ftv', 'korrigalt', 'kretaban_rogzitettem', 'tipus', 'rogzites_datuma']
-    search_fields = ['profile__user__username', 'profile__user__first_name', 'profile__user__last_name', 'megjegyzes_diak', 'megjegyzes_tanar']
+    list_display = ['id', 'get_student', 'get_osztaly', 'eleje', 'vege', 'tipus', 'allapot', 'get_megjegyzes_diak', 'diak', 'ftv', 'korrigalt', 'is_group_leader', 'archived', 'rogzites_datuma']
+    list_filter = ['allapot', 'diak', 'ftv', 'korrigalt', 'kretaban_rogzitettem', 'tipus', 'is_group_leader', 'archived', 'rogzites_datuma']
+    search_fields = ['profile__user__username', 'profile__user__first_name', 'profile__user__last_name', 'megjegyzes_diak', 'megjegyzes_tanar', 'group_id']
     date_hierarchy = 'rogzites_datuma'
-    raw_id_fields = ['profile']
+    raw_id_fields = ['profile', 'created_by_group_leader']
     filter_horizontal = ['mulasztasok']
-    readonly_fields = ['rogzites_datuma']
+    readonly_fields = ['rogzites_datuma', 'group_id']
     ordering = ['-rogzites_datuma']
     
     fieldsets = (
@@ -119,8 +172,16 @@ class IgazolasAdmin(admin.ModelAdmin):
         ('Forrás és típus', {
             'fields': ('diak', 'ftv', 'korrigalt', 'bkk_verification')
         }),
+        ('Csoportos igazolás', {
+            'fields': ('group_id', 'is_group_leader', 'group_member_count', 'created_by_group_leader'),
+            'classes': ('collapse',)
+        }),
         ('Tanári kezelés', {
             'fields': ('allapot', 'megjegyzes_tanar', 'kretaban_rogzitettem')
+        }),
+        ('Archiválás', {
+            'fields': ('archived', 'academic_year'),
+            'classes': ('collapse',)
         }),
         ('Egyéb', {
             'fields': ('rogzites_datuma',)
@@ -230,4 +291,66 @@ class OverrideAdmin(admin.ModelAdmin):
             return obj.reason[:50] + '...' if len(obj.reason) > 50 else obj.reason
         return '-'
     get_reason_short.short_description = 'Indoklás'
+
+
+# APIMetrics Admin
+@admin.register(APIMetrics)
+class APIMetricsAdmin(admin.ModelAdmin):
+    list_display = ['id', 'endpoint_path', 'http_method', 'request_count', 'avg_response_ms', 'error_count', 'recorded_at']
+    list_filter = ['http_method', 'recorded_at']
+    search_fields = ['endpoint_path']
+    date_hierarchy = 'recorded_at'
+    ordering = ['-recorded_at']
+    readonly_fields = ['recorded_at']
+    
+    fieldsets = (
+        ('Endpoint Information', {
+            'fields': ('endpoint_path', 'http_method', 'recorded_at')
+        }),
+        ('Performance Metrics', {
+            'fields': ('avg_response_ms', 'p95_response_ms', 'request_count', 'error_count')
+        }),
+        ('Detailed Data', {
+            'fields': ('detailed_metrics',),
+            'classes': ('collapse',)
+        }),
+    )
+
+
+# ImpersonationLog Admin
+@admin.register(ImpersonationLog)
+class ImpersonationLogAdmin(admin.ModelAdmin):
+    list_display = ['id', 'admin_user', 'impersonated_user', 'start_time', 'end_time', 'is_active', 'get_duration']
+    list_filter = ['is_active', 'start_time']
+    search_fields = ['admin_user__username', 'impersonated_user__username']
+    date_hierarchy = 'start_time'
+    ordering = ['-start_time']
+    readonly_fields = ['start_time', 'end_time']
+    raw_id_fields = ['admin_user', 'impersonated_user']
+    
+    fieldsets = (
+        ('Session Information', {
+            'fields': ('admin_user', 'impersonated_user', 'is_active')
+        }),
+        ('Timing', {
+            'fields': ('start_time', 'end_time')
+        }),
+        ('Session Details', {
+            'fields': ('ip_address', 'user_agent', 'actions_performed'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def get_duration(self, obj):
+        if obj.end_time:
+            duration = obj.end_time - obj.start_time
+            total_seconds = int(duration.total_seconds())
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            seconds = total_seconds % 60
+            return f"{hours}h {minutes}m {seconds}s"
+        elif obj.is_active:
+            return "Active"
+        return "-"
+    get_duration.short_description = 'Duration'
 

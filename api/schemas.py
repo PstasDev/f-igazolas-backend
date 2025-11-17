@@ -591,3 +591,379 @@ class ApprovalRatesResponse(Schema):
     by_type: List[ApprovalRateByType]
     by_class: List[ApprovalRateByClass]
     trend: List[TrendDataPoint]
+
+
+# ============================================================================
+# System Management Features (Phase 1)
+# ============================================================================
+
+# Feature #10: Database Statistics
+class TableStats(Schema):
+    name: str
+    count: int
+    percentage: float
+
+
+class GrowthRate(Schema):
+    daily: int
+    weekly: int
+    monthly: int
+
+
+class DatabaseStatsResponse(Schema):
+    total_users: int
+    total_classes: int
+    total_igazolasok: int
+    total_mulasztasok: int
+    growth_rate: GrowthRate
+    db_size_mb: Optional[float] = None
+    largest_tables: List[TableStats]
+
+
+# Feature #12: Storage Usage Monitoring
+class LargestFile(Schema):
+    name: str
+    size_mb: float
+    type: str
+    uploaded_date: Optional[datetime] = None
+
+
+class StorageTrendPoint(Schema):
+    date: DateType
+    total_mb: float
+
+
+class StorageStatsResponse(Schema):
+    total_mb: float
+    images_mb: float
+    documents_mb: float
+    other_mb: float
+    largest_files: List[LargestFile]
+    trend: List[StorageTrendPoint]
+
+
+# Feature #19: Maintenance Mode
+class MaintenanceStatusResponse(Schema):
+    is_active: bool
+    message: Optional[str] = None
+    scheduled_start: Optional[datetime] = None
+    scheduled_end: Optional[datetime] = None
+    allowed_users: List[str]
+
+
+class MaintenanceToggleRequest(Schema):
+    enabled: bool
+    message: Optional[str] = None
+    scheduled_start: Optional[datetime] = None
+    scheduled_end: Optional[datetime] = None
+
+
+# ============================================================================
+# Student & Teacher Features
+# ============================================================================
+
+# Feature #25: Group Absences Support
+class EligibleStudent(Schema):
+    id: int
+    username: str
+    first_name: str
+    last_name: str
+    full_name: str
+    is_studios: bool
+
+
+class EligibleStudentsResponse(Schema):
+    eligible_students: List[EligibleStudent]
+    total_count: int
+
+
+class GroupIgazolasCreateRequest(Schema):
+    eleje: datetime
+    vege: datetime
+    tipus: int
+    megjegyzes_diak: Optional[str] = None
+    imgDriveURL: Optional[str] = None
+    bkk_verification: Optional[dict] = None
+    additional_student_ids: List[int]  # List of student IDs to include in group
+
+
+class GroupMemberInfo(Schema):
+    id: int
+    profile_id: int
+    student_name: str
+    status: str
+    is_group_leader: bool
+
+
+class GroupIgazolasCreateResponse(Schema):
+    created_count: int
+    group_id: str
+    igazolasok: List[dict]
+    message: str
+
+
+class GroupMembersResponse(Schema):
+    group_leader: Optional[GroupMemberInfo] = None
+    members: List[GroupMemberInfo]
+    group_id: str
+    total_members: int
+
+
+# Feature #27: Class Period Configuration
+class PeriodUsageInfo(Schema):
+    ora: int
+    usage_count: int
+    has_lessons: bool
+
+
+class PeriodConfigResponse(Schema):
+    class_id: int
+    class_name: str
+    enabled_periods: List[int]
+    disabled_periods: List[int]
+
+
+class UpdatePeriodConfigRequest(Schema):
+    enabled_periods: List[int]
+
+
+class PeriodUsageAnalysisResponse(Schema):
+    class_id: int
+    class_name: str
+    periods: List[PeriodUsageInfo]
+    recommendations: List[int]  # Periods that could be disabled
+
+
+# ============================================================================
+# Academic Year & Bulk Operations
+# ============================================================================
+
+# Feature #14: Academic Year Archival
+class ArchivedYearInfo(Schema):
+    year: str
+    class_count: int
+    student_count: int
+    igazolasok_count: int
+
+
+class ArchiveRequest(Schema):
+    year_start: int
+    archive_classes: bool = True
+    archive_igazolasok: bool = True
+
+
+class ArchiveResponse(Schema):
+    archived_count: dict
+    message: str
+
+
+class ArchivedDataResponse(Schema):
+    year: str
+    classes: List[dict]
+    students: List[dict]
+    igazolasok: List[dict]
+
+
+# Feature #9: Bulk Assignment
+class StudentCreationData(Schema):
+    id: int
+    email: str
+    username: str
+    password: str
+    first_login_url: str
+
+
+class BulkCreateStudentsRequest(Schema):
+    emails: List[str]
+    class_id: int
+
+
+class BulkCreateStudentsResponse(Schema):
+    created: List[StudentCreationData]
+    failed: List[str]
+    message: str
+
+
+class CreateClassRequest(Schema):
+    tagozat: str
+    kezdes_eve: int
+    teacher_email: str
+    student_emails: List[str]
+
+
+class CreateClassResponse(Schema):
+    class_id: int
+    created_students: List[StudentCreationData]
+    teacher_assigned: bool
+    message: str
+
+
+# Feature #26: Teacher-Created Igazolások
+class TeacherCreateIgazolasRequest(Schema):
+    student_id: int
+    eleje: datetime
+    vege: datetime
+    tipus: int
+    megjegyzes_diak: Optional[str] = None
+
+
+class TeacherBulkCreateIgazolasRequest(Schema):
+    student_ids: List[int]
+    eleje: datetime
+    vege: datetime
+    tipus: int
+    megjegyzes_diak: Optional[str] = None
+
+
+class EligibleStudentForTeacher(Schema):
+    id: int
+    username: str
+    full_name: str
+    class_name: str
+    recent_absences: int
+
+
+# Feature #11: API Performance Metrics
+class APIMetricsEndpoint(Schema):
+    path: str
+    method: str
+    avg_response_ms: float
+    request_count: int
+    error_count: int
+    p95_response_ms: Optional[float] = None
+    error_rate: float  # percentage
+
+
+class APIMetricsResponse(Schema):
+    endpoints: List[APIMetricsEndpoint]
+    slowest_endpoints: List[APIMetricsEndpoint]
+    most_used: List[APIMetricsEndpoint]
+    total_requests: int
+    average_response_time: float
+    from_date: Optional[str] = None
+    to_date: Optional[str] = None
+
+
+class APIMetricsRefreshResponse(Schema):
+    message: str
+    recorded_count: int
+
+
+# Feature #15: Manual Attendance Management
+class AttendanceCreateRequest(Schema):
+    student_id: int
+    datum: str  # Date in YYYY-MM-DD format
+    ora: int
+    tantargy: str
+    tema: str
+    tipus: str
+    igazolt: bool
+    igazolas_id: Optional[int] = None
+
+
+class AttendanceUpdateRequest(Schema):
+    datum: Optional[str] = None
+    ora: Optional[int] = None
+    tantargy: Optional[str] = None
+    tema: Optional[str] = None
+    tipus: Optional[str] = None
+    igazolt: Optional[bool] = None
+    igazolas_id: Optional[int] = None
+
+
+class AttendanceResponse(Schema):
+    id: int
+    student_id: int
+    student_name: str
+    datum: str
+    ora: int
+    tantargy: str
+    tema: str
+    tipus: str
+    igazolt: bool
+    igazolas_id: Optional[int] = None
+    igazolas_tipusa: Optional[str] = None
+    rogzites_datuma: str
+
+
+class StudentAttendanceResponse(Schema):
+    student_id: int
+    student_name: str
+    attendance_records: List[AttendanceResponse]
+    total_count: int
+    igazolt_count: int
+    igazolatlan_count: int
+
+
+# Feature #20: User Impersonation
+class ImpersonateStartRequest(Schema):
+    user_id: int
+
+
+class ImpersonateStartResponse(Schema):
+    impersonation_token: str
+    user: UserSchema
+    restrictions: List[str]
+    message: str
+
+
+class ImpersonateStopResponse(Schema):
+    message: str
+    original_user: UserSchema
+
+
+class ImpersonateStatusResponse(Schema):
+    is_impersonating: bool
+    impersonated_user: Optional[UserSchema] = None
+    original_user: Optional[UserSchema] = None
+    started_at: Optional[str] = None
+
+
+# Feature #28: Permission Matrix
+class PermissionMatrixResponse(Schema):
+    classes: List[OsztalySimpleSchema]
+    types: List[IgazolasTipusSchema]
+    matrix: dict  # { class_id: { type_id: boolean } }
+
+
+class UpdatePermissionRequest(Schema):
+    class_id: int
+    type_id: int
+    allowed: bool
+
+
+class UpdatePermissionResponse(Schema):
+    updated: bool
+    message: str
+
+
+class BulkUpdatePermissionsRequest(Schema):
+    updates: List[UpdatePermissionRequest]
+
+
+class BulkUpdatePermissionsResponse(Schema):
+    updated_count: int
+    failed_count: int
+    message: str
+
+
+# Feature #8: Multiple Class Support
+class ClassAssignment(Schema):
+    id: int
+    class_id: int
+    class_name: str
+    is_primary: bool
+    assigned_date: str
+    delegation_end_date: Optional[str] = None
+
+
+class AssignClassesRequest(Schema):
+    class_ids: List[int]
+    is_primary: bool
+    delegation_end_date: Optional[str] = None
+
+
+class TeacherClassesResponse(Schema):
+    teacher_id: int
+    teacher_name: str
+    classes: List[ClassAssignment]
