@@ -156,6 +156,29 @@ class IgazolasTipus(models.Model):
                                                  help_text="Lehetővé teszi több diák párhuzamos igazolását ugyanarra az eseményre")
     requires_studios = models.BooleanField(default=False, verbose_name="Stúdiós szükséges", 
                                           help_text="Csak stúdiós diákok használhatják ezt az igazolás típust")
+    
+    # Categorization and sub-forms
+    category = models.CharField(
+        max_length=50,
+        choices=[
+            ('egeszsegugy', 'Egészségügyi'),
+            ('verseny', 'Verseny'),
+            ('kulturalis', 'Kulturális/Művészeti'),
+            ('kozlekedes', 'Közlekedés'),
+            ('tanulmanyi', 'Tanulmányi'),
+            ('csaladi', 'Családi'),
+            ('egyeb', 'Egyéb'),
+        ],
+        default='egyeb',
+        verbose_name='Kategória'
+    )
+    category_emoji = models.CharField(max_length=10, null=True, blank=True, verbose_name='Kategória emoji')
+    has_sub_form = models.BooleanField(default=False, verbose_name='Van alkérdőív',
+                                       help_text='A típus további adatokat kér (pl. verseny részletek)')
+    sub_form_schema = models.JSONField(null=True, blank=True, verbose_name='Alkérdőív séma',
+                                       help_text='JSON séma a további mezőkhöz')
+    display_order = models.IntegerField(default=0, verbose_name='Megjelenítési sorrend',
+                                       help_text='Kategórián belüli sorrend (alacsonyabb = előrébb)')
 
     def __str__(self):
         return self.nev
@@ -163,6 +186,7 @@ class IgazolasTipus(models.Model):
     class Meta:
         verbose_name = 'Igazolás Típus'
         verbose_name_plural = 'Igazolás Típusok'
+        ordering = ['category', 'display_order', 'nev']
 
 # Igazolás - Új Igazolás form response
 class Igazolas(models.Model):
@@ -194,6 +218,10 @@ class Igazolas(models.Model):
 
     # BKK Verification - JSON field for BKK related data
     bkk_verification = models.JSONField(null=True, blank=True)
+    
+    # Sub-form data for competition types, etc.
+    sub_form_data = models.JSONField(null=True, blank=True, verbose_name='Alkérdőív adatok',
+                                     help_text='Típus-specifikus további adatok JSON formátumban')
     
     # Feature #25: Group Absences Support
     group_id = models.UUIDField(null=True, blank=True, verbose_name="Csoport azonosító", 
@@ -586,51 +614,4 @@ class APIMetrics(models.Model):
         indexes = [
             models.Index(fields=['endpoint_path', 'http_method']),
             models.Index(fields=['-recorded_at']),
-        ]
-
-
-class ImpersonationLog(models.Model):
-    """
-    Model to log admin impersonation sessions.
-    Tracks when admins view the system as other users.
-    """
-    admin_user = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='impersonation_sessions_as_admin',
-        verbose_name="Admin Felhasználó"
-    )
-    impersonated_user = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='impersonation_sessions_as_target',
-        verbose_name="Megszemélyesített Felhasználó"
-    )
-    start_time = models.DateTimeField(auto_now_add=True, verbose_name="Kezdés Időpontja")
-    end_time = models.DateTimeField(null=True, blank=True, verbose_name="Befejezés Időpontja")
-    is_active = models.BooleanField(default=True, verbose_name="Aktív")
-    
-    # Track actions performed during impersonation
-    actions_performed = models.JSONField(
-        default=list,
-        blank=True,
-        verbose_name="Elvégzett Műveletek",
-        help_text="List of actions performed during impersonation"
-    )
-    
-    # Additional metadata
-    ip_address = models.GenericIPAddressField(null=True, blank=True, verbose_name="IP Cím")
-    user_agent = models.CharField(max_length=500, null=True, blank=True, verbose_name="User Agent")
-    
-    def __str__(self):
-        status = "Aktív" if self.is_active else "Befejezett"
-        return f"{self.admin_user.username} → {self.impersonated_user.username} ({status})"
-    
-    class Meta:
-        verbose_name = "Impersonation Log"
-        verbose_name_plural = "Impersonation Logs"
-        ordering = ['-start_time']
-        indexes = [
-            models.Index(fields=['admin_user', '-start_time']),
-            models.Index(fields=['is_active']),
         ]

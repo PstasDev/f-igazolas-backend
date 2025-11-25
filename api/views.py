@@ -10,6 +10,7 @@ from django.http import HttpResponse
 from django.conf import settings
 from typing import List, Optional
 from datetime import datetime, timedelta
+from pathlib import Path
 import logging
 import requests
 
@@ -49,7 +50,6 @@ from .schemas import (
     # New feature schemas
     APIMetricsResponse, APIMetricsRefreshResponse,
     AttendanceCreateRequest, AttendanceUpdateRequest, AttendanceResponse, StudentAttendanceResponse,
-    ImpersonateStartRequest, ImpersonateStartResponse, ImpersonateStopResponse, ImpersonateStatusResponse,
     PermissionMatrixResponse, UpdatePermissionRequest, UpdatePermissionResponse,
     BulkUpdatePermissionsRequest, BulkUpdatePermissionsResponse,
     AssignClassesRequest, TeacherClassesResponse
@@ -714,11 +714,94 @@ def list_igazolas_tipus(request):
             'leiras': tipus.leiras,
             'beleszamit': tipus.beleszamit,
             'iskolaerdeku': tipus.iskolaerdeku,
-            'nem_fogado_osztalyok': nem_fogado_osztalyok
+            'nem_fogado_osztalyok': nem_fogado_osztalyok,
+            'category': tipus.category,
+            'category_emoji': tipus.category_emoji,
+            'has_sub_form': tipus.has_sub_form,
+            'sub_form_schema': tipus.sub_form_schema,
+            'display_order': tipus.display_order,
+            'supports_group_absence': tipus.supports_group_absence,
+            'requires_studios': tipus.requires_studios
         }
         result.append(tipus_data)
     
     return 200, result
+
+
+@api.get("/igazolas-tipus/categorized", response={200: dict, 401: ErrorResponse}, auth=jwt_auth, tags=["IgazolasTipus"])
+def get_categorized_igazolas_types(request):
+    """
+    Get all igazolás types grouped by category.
+    
+    Returns types organized by category with metadata for UI rendering.
+    """
+    # Get user's class for filtering
+    profile, _ = Profile.objects.get_or_create(user=request.auth)
+    osztaly = profile.osztalyom()
+    
+    # Get all types, excluding those disabled for this class
+    all_types = IgazolasTipus.objects.all()
+    if osztaly:
+        all_types = all_types.exclude(nem_fogado_osztalyok=osztaly)
+    
+    # Group by category
+    categories = {}
+    for tipus in all_types:
+        cat = tipus.category
+        if cat not in categories:
+            categories[cat] = {
+                'name': tipus.get_category_display(),
+                'emoji': tipus.category_emoji or get_default_emoji(cat),
+                'types': []
+            }
+        
+        categories[cat]['types'].append({
+            'id': tipus.id,
+            'nev': tipus.nev,
+            'leiras': tipus.leiras,
+            'beleszamit': tipus.beleszamit,
+            'iskolaerdeku': tipus.iskolaerdeku,
+            'supports_group_absence': tipus.supports_group_absence,
+            'requires_studios': tipus.requires_studios,
+            'has_sub_form': tipus.has_sub_form,
+            'sub_form_schema': tipus.sub_form_schema,
+            'display_order': tipus.display_order,
+            'category': tipus.category,
+            'category_emoji': tipus.category_emoji,
+        })
+    
+    # Sort categories and types within
+    sorted_categories = []
+    category_order = ['egeszsegugy', 'verseny', 'kulturalis', 'kozlekedes', 
+                     'tanulmanyi', 'csaladi', 'egyeb']
+    
+    for cat_key in category_order:
+        if cat_key in categories:
+            cat_data = categories[cat_key]
+            cat_data['types'].sort(key=lambda t: (t['display_order'], t['nev']))
+            sorted_categories.append({
+                'key': cat_key,
+                **cat_data
+            })
+    
+    return 200, {
+        'categories': sorted_categories,
+        'total_types': sum(len(c['types']) for c in sorted_categories)
+    }
+
+
+def get_default_emoji(category: str) -> str:
+    """Get default emoji for category if not set in model."""
+    emoji_map = {
+        'egeszsegugy': '🏥',
+        'verseny': '🏆',
+        'kulturalis': '🎭',
+        'kozlekedes': '🚌',
+        'tanulmanyi': '📚',
+        'csaladi': '👨‍👩‍👧',
+        'egyeb': '⚙️',
+    }
+    return emoji_map.get(category, '📝')
 
 
 @api.get("/igazolas-tipus/{tipus_id}", response={200: IgazolasTipusSchema, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["IgazolasTipus"])
@@ -742,7 +825,14 @@ def get_igazolas_tipus(request, tipus_id: int):
         'leiras': tipus.leiras,
         'beleszamit': tipus.beleszamit,
         'iskolaerdeku': tipus.iskolaerdeku,
-        'nem_fogado_osztalyok': nem_fogado_osztalyok
+        'nem_fogado_osztalyok': nem_fogado_osztalyok,
+        'category': tipus.category,
+        'category_emoji': tipus.category_emoji,
+        'has_sub_form': tipus.has_sub_form,
+        'sub_form_schema': tipus.sub_form_schema,
+        'display_order': tipus.display_order,
+        'supports_group_absence': tipus.supports_group_absence,
+        'requires_studios': tipus.requires_studios
     }
 
 
@@ -1157,7 +1247,8 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         diak_extra_ido_elotte=None,
         diak_extra_ido_utana=None,
         imgDriveURL=data.imgDriveURL,
-        bkk_verification=data.bkk_verification
+        bkk_verification=data.bkk_verification,
+        sub_form_data=data.sub_form_data  # New field
     )
     
     osztaly = igazolas.profile.osztalyom()
@@ -3636,6 +3727,7 @@ def get_database_stats(request):
     total_classes = Osztaly.objects.count()
     total_igazolasok = Igazolas.objects.count()
     total_mulasztasok = Mulasztas.objects.count()
+    total_igazolas_types = IgazolasTipus.objects.count()
     
     # Calculate growth rates
     now = timezone.now()
@@ -3699,6 +3791,18 @@ def get_database_stats(request):
     logger.info(f"User {request.auth.username} retrieved database statistics")
     
     return 200, {
+        'total_counts': {
+            'users': total_users,
+            'classes': total_classes,
+            'igazolasok': total_igazolasok,
+            'mulasztasok': total_mulasztasok,
+            'igazolas_types': total_igazolas_types
+        },
+        'growth_rates': {
+            'igazolasok_7d': weekly_igazolasok,
+            'mulasztasok_7d': 0,  # Not yet calculated
+            'users_30d': 0  # Not yet calculated
+        },
         'total_users': total_users,
         'total_classes': total_classes,
         'total_igazolasok': total_igazolasok,
@@ -3708,6 +3812,7 @@ def get_database_stats(request):
             'weekly': weekly_igazolasok,
             'monthly': monthly_igazolasok
         },
+        'database_size_mb': db_size_mb,
         'db_size_mb': db_size_mb,
         'largest_tables': largest_tables
     }
@@ -3783,11 +3888,21 @@ def get_storage_stats(request):
     
     logger.info(f"User {request.auth.username} retrieved storage statistics")
     
+    # Get database size
+    db_path = Path(settings.DATABASES['default']['NAME'])
+    db_size_bytes = db_path.stat().st_size if db_path.exists() else 0
+    db_size_mb = round(db_size_bytes / (1024 * 1024), 2)
+    
+    # Recalculate total with database size
+    total_storage = round(estimated_images_mb + estimated_bkk_mb + db_size_mb, 2)
+    
     return 200, {
-        'total_mb': total_mb,
-        'images_mb': round(estimated_images_mb, 2),
-        'documents_mb': estimated_bkk_mb,
-        'other_mb': 0.0,
+        'breakdown': {
+            'images_mb': round(estimated_images_mb, 2),
+            'bkk_data_mb': estimated_bkk_mb,
+            'database_mb': db_size_mb
+        },
+        'total_storage_mb': total_storage,
         'largest_files': largest_files[:10],
         'trend': trend
     }
@@ -3834,12 +3949,18 @@ def get_maintenance_status(request):
 
 
 @api.post("/admin/maintenance/toggle", response={200: dict, 400: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Admin - System Management"])
-def toggle_maintenance_mode(request, enabled: bool, message: Optional[str] = None, scheduled_start: Optional[datetime] = None, scheduled_end: Optional[datetime] = None):
+def toggle_maintenance_mode(request, payload: dict = Body(...)):
     """
     Enable or disable maintenance mode.
     
     Requires superuser permission.
     When enabled, creates a system message that will be displayed to all users.
+    
+    Payload:
+    - enabled: bool (optional, default: True if message provided, False otherwise)
+    - message: str (optional, default maintenance message)
+    - scheduled_start: datetime (optional, default: now)
+    - scheduled_end: datetime (optional, default: now + 2 hours)
     """
     if not request.auth.is_superuser:
         return 403, {
@@ -3847,10 +3968,25 @@ def toggle_maintenance_mode(request, enabled: bool, message: Optional[str] = Non
             'detail': 'Only superusers can toggle maintenance mode'
         }
     
+    # Check if there's an active maintenance message
+    has_active = SystemMessage.objects.filter(
+        messageType='operator',
+        severity='warning',
+        title__icontains='Maintenance',
+        showTo__gte=timezone.now()
+    ).exists()
+    
+    # If message is provided, enable maintenance; otherwise toggle
+    message = payload.get('message')
+    enabled = payload.get('enabled', message is not None if not has_active else not has_active)
+    
     if enabled:
         # Create maintenance mode message
         if not message:
             message = 'A rendszer karbantartás alatt áll. Kérjük próbálja meg később.'
+        
+        scheduled_start = payload.get('scheduled_start')
+        scheduled_end = payload.get('scheduled_end')
         
         start = scheduled_start or timezone.now()
         end = scheduled_end or (timezone.now() + timedelta(hours=2))
@@ -4074,6 +4210,7 @@ def create_group_igazolas(request, eleje: datetime, vege: datetime, tipus: int,
             megjegyzes_diak=megjegyzes_diak,
             imgDriveURL=imgDriveURL,
             bkk_verification=bkk_verification,
+            sub_form_data=sub_form_data,  # New field
             diak=True,
             ftv=False,
             group_id=group_id,
@@ -4096,6 +4233,7 @@ def create_group_igazolas(request, eleje: datetime, vege: datetime, tipus: int,
                 megjegyzes_diak=megjegyzes_diak,
                 imgDriveURL=imgDriveURL,
                 bkk_verification=bkk_verification,
+                sub_form_data=sub_form_data,  # New field
                 diak=False,  # Not created by student themselves
                 ftv=False,
                 group_id=group_id,
@@ -5252,162 +5390,6 @@ def get_student_attendance(request, student_id: int, from_date: Optional[str] = 
 
 
 # =======================
-# Feature #20: User Impersonation
-# =======================
-
-@api.post("/admin/impersonate/start", response={200: dict, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Impersonation"])
-def start_impersonation(request, payload: dict):
-    """
-    Start impersonating another user.
-    Returns a special impersonation token.
-    """
-    from .models import ImpersonationLog
-    from .jwt_utils import generate_jwt_token
-    
-    if not request.auth.is_superuser:
-        return 403, {'error': 'Forbidden', 'detail': 'Only superusers can impersonate users'}
-    
-    user_id = payload.get('user_id')
-    if not user_id:
-        return 400, {'error': 'Bad request', 'detail': 'user_id is required'}
-    
-    # Prevent self-impersonation
-    if request.auth.id == user_id:
-        return 400, {'error': 'Bad request', 'detail': 'You cannot impersonate yourself'}
-    
-    try:
-        target_user = User.objects.get(id=user_id, is_active=True)
-    except User.DoesNotExist:
-        return 404, {'error': 'Not found', 'detail': 'User not found or inactive'}
-    
-    # End any active impersonation sessions for this admin
-    ImpersonationLog.objects.filter(admin_user=request.auth, is_active=True).update(
-        is_active=False,
-        end_time=timezone.now()
-    )
-    
-    # Create impersonation log
-    impersonation_log = ImpersonationLog.objects.create(
-        admin_user=request.auth,
-        impersonated_user=target_user,
-        ip_address=request.META.get('REMOTE_ADDR'),
-        user_agent=request.META.get('HTTP_USER_AGENT', '')[:500]
-    )
-    
-    # Generate impersonation token (regular JWT for the target user with special claim)
-    token_data = generate_jwt_token(target_user)
-    
-    logger.info(f"Superuser {request.auth.username} started impersonating {target_user.username}")
-    
-    return 200, {
-        'impersonation_token': token_data['token'],
-        'user': {
-            'id': target_user.id,
-            'username': target_user.username,
-            'first_name': target_user.first_name,
-            'last_name': target_user.last_name,
-            'email': target_user.email
-        },
-        'restrictions': [
-            'Cannot change passwords',
-            'Cannot delete users',
-            'Cannot promote/demote users',
-            'All actions are logged'
-        ],
-        'message': f'Now impersonating {target_user.username}. Remember to exit impersonation when done.'
-    }
-
-
-@api.post("/admin/impersonate/stop", response={200: dict, 403: ErrorResponse}, auth=jwt_auth, tags=["Admin - Impersonation"])
-def stop_impersonation(request):
-    """
-    Stop current impersonation session.
-    """
-    from .models import ImpersonationLog
-    
-    if not request.auth.is_superuser:
-        return 403, {'error': 'Forbidden', 'detail': 'Only superusers can stop impersonation'}
-    
-    # Find active impersonation sessions
-    active_sessions = ImpersonationLog.objects.filter(
-        admin_user=request.auth,
-        is_active=True
-    )
-    
-    if not active_sessions.exists():
-        return 200, {
-            'message': 'No active impersonation session',
-            'original_user': {
-                'id': request.auth.id,
-                'username': request.auth.username,
-                'first_name': request.auth.first_name,
-                'last_name': request.auth.last_name,
-                'email': request.auth.email
-            }
-        }
-    
-    # End all active sessions
-    active_sessions.update(
-        is_active=False,
-        end_time=timezone.now()
-    )
-    
-    logger.info(f"Superuser {request.auth.username} stopped impersonation")
-    
-    return 200, {
-        'message': 'Impersonation session ended',
-        'original_user': {
-            'id': request.auth.id,
-            'username': request.auth.username,
-            'first_name': request.auth.first_name,
-            'last_name': request.auth.last_name,
-            'email': request.auth.email
-        }
-    }
-
-
-@api.get("/admin/impersonate/status", response={200: dict}, auth=jwt_auth, tags=["Admin - Impersonation"])
-def get_impersonation_status(request):
-    """
-    Check if currently impersonating and get session details.
-    """
-    from .models import ImpersonationLog
-    
-    # Check for active impersonation by this user
-    active_session = ImpersonationLog.objects.filter(
-        admin_user=request.auth,
-        is_active=True
-    ).first()
-    
-    if active_session:
-        return 200, {
-            'is_impersonating': True,
-            'impersonated_user': {
-                'id': active_session.impersonated_user.id,
-                'username': active_session.impersonated_user.username,
-                'first_name': active_session.impersonated_user.first_name,
-                'last_name': active_session.impersonated_user.last_name,
-                'email': active_session.impersonated_user.email
-            },
-            'original_user': {
-                'id': request.auth.id,
-                'username': request.auth.username,
-                'first_name': request.auth.first_name,
-                'last_name': request.auth.last_name,
-                'email': request.auth.email
-            },
-            'started_at': active_session.start_time.isoformat()
-        }
-    
-    return 200, {
-        'is_impersonating': False,
-        'impersonated_user': None,
-        'original_user': None,
-        'started_at': None
-    }
-
-
-# =======================
 # Feature #28: Permission Matrix
 # =======================
 
@@ -5440,7 +5422,7 @@ def get_permission_matrix(request):
             'id': osztaly.id,
             'tagozat': osztaly.tagozat,
             'kezdes_eve': osztaly.kezdes_eve,
-            'nev': osztaly.nev
+            'nev': str(osztaly)
         })
     
     types_data = []
@@ -5487,11 +5469,11 @@ def update_permission(request, payload: dict):
     if allowed:
         # Remove from blocked list (allow)
         osztaly.nem_fogadott_igazolas_tipusok.remove(tipus)
-        message = f'Permission granted: {osztaly.nev} can now use {tipus.nev}'
+        message = f'Permission granted: {str(osztaly)} can now use {tipus.nev}'
     else:
         # Add to blocked list (block)
         osztaly.nem_fogadott_igazolas_tipusok.add(tipus)
-        message = f'Permission revoked: {osztaly.nev} cannot use {tipus.nev}'
+        message = f'Permission revoked: {str(osztaly)} cannot use {tipus.nev}'
     
     logger.info(f"Superuser {request.auth.username} updated permission: {message}")
     
@@ -5587,7 +5569,7 @@ def assign_classes_to_teacher(request, teacher_id: int, payload: dict):
             assigned_classes.append({
                 'id': osztaly.id,
                 'class_id': osztaly.id,
-                'class_name': osztaly.nev,
+                'class_name': str(osztaly),
                 'is_primary': is_primary,
                 'assigned_date': timezone.now().isoformat(),
                 'delegation_end_date': delegation_end_date

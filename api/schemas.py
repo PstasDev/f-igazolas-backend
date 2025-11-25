@@ -78,6 +78,14 @@ class IgazolasTipusSchema(Schema):
     beleszamit: bool
     iskolaerdeku: bool
     nem_fogado_osztalyok: Optional[List[OsztalySimpleSchema]] = None
+    # Categorization fields
+    category: str
+    category_emoji: Optional[str] = None
+    has_sub_form: bool
+    sub_form_schema: Optional[dict] = None
+    display_order: int
+    supports_group_absence: bool
+    requires_studios: bool
 
 
 # Igazolas schemas
@@ -99,6 +107,7 @@ class IgazolasSchema(Schema):
     diak_extra_ido_utana: Optional[int] = None
     imgDriveURL: Optional[str] = None
     bkk_verification: Optional[dict] = None
+    sub_form_data: Optional[dict] = None  # New field for sub-form data
     allapot: str
     megjegyzes_tanar: Optional[str] = None
     kretaban_rogzitettem: bool
@@ -115,6 +124,7 @@ class IgazolasCreateRequest(Schema):
     diak_extra_ido_utana: Optional[int] = None
     imgDriveURL: Optional[str] = None
     bkk_verification: Optional[dict] = None
+    sub_form_data: Optional[dict] = None  # New field for sub-form data
 
 
 # Quick action schemas
@@ -684,6 +694,7 @@ class GroupIgazolasCreateRequest(Schema):
     megjegyzes_diak: Optional[str] = None
     imgDriveURL: Optional[str] = None
     bkk_verification: Optional[dict] = None
+    sub_form_data: Optional[dict] = None  # New field for sub-form data
     additional_student_ids: List[int]  # List of student IDs to include in group
 
 
@@ -893,30 +904,6 @@ class StudentAttendanceResponse(Schema):
     total_count: int
     igazolt_count: int
     igazolatlan_count: int
-
-
-# Feature #20: User Impersonation
-class ImpersonateStartRequest(Schema):
-    user_id: int
-
-
-class ImpersonateStartResponse(Schema):
-    impersonation_token: str
-    user: UserSchema
-    restrictions: List[str]
-    message: str
-
-
-class ImpersonateStopResponse(Schema):
-    message: str
-    original_user: UserSchema
-
-
-class ImpersonateStatusResponse(Schema):
-    is_impersonating: bool
-    impersonated_user: Optional[UserSchema] = None
-    original_user: Optional[UserSchema] = None
-    started_at: Optional[str] = None
 
 
 # Feature #28: Permission Matrix

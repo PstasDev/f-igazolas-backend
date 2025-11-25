@@ -3,7 +3,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
 from .models import (
     Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas, 
-    SystemMessage, TanitasiSzunet, Override, APIMetrics, ImpersonationLog
+    SystemMessage, TanitasiSzunet, Override, APIMetrics
 )
 
 
@@ -315,42 +315,3 @@ class APIMetricsAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
-
-
-# ImpersonationLog Admin
-@admin.register(ImpersonationLog)
-class ImpersonationLogAdmin(admin.ModelAdmin):
-    list_display = ['id', 'admin_user', 'impersonated_user', 'start_time', 'end_time', 'is_active', 'get_duration']
-    list_filter = ['is_active', 'start_time']
-    search_fields = ['admin_user__username', 'impersonated_user__username']
-    date_hierarchy = 'start_time'
-    ordering = ['-start_time']
-    readonly_fields = ['start_time', 'end_time']
-    raw_id_fields = ['admin_user', 'impersonated_user']
-    
-    fieldsets = (
-        ('Session Information', {
-            'fields': ('admin_user', 'impersonated_user', 'is_active')
-        }),
-        ('Timing', {
-            'fields': ('start_time', 'end_time')
-        }),
-        ('Session Details', {
-            'fields': ('ip_address', 'user_agent', 'actions_performed'),
-            'classes': ('collapse',)
-        }),
-    )
-    
-    def get_duration(self, obj):
-        if obj.end_time:
-            duration = obj.end_time - obj.start_time
-            total_seconds = int(duration.total_seconds())
-            hours = total_seconds // 3600
-            minutes = (total_seconds % 3600) // 60
-            seconds = total_seconds % 60
-            return f"{hours}h {minutes}m {seconds}s"
-        elif obj.is_active:
-            return "Active"
-        return "-"
-    get_duration.short_description = 'Duration'
-
