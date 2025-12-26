@@ -3142,26 +3142,39 @@ def analyze_mulasztas_coverage(user: User, include_igazolt: bool = False) -> dic
     igazolt_count = sum(1 for m in mulasztasok if m.igazolt)
     nem_igazolt_count = len(mulasztasok) - igazolt_count
     
+    # Hungarian bell schedule (csengetési rend) - matching frontend periods.ts
+    BELL_SCHEDULE = [
+        ("07:30", "08:15"),  # 0. óra
+        ("08:25", "09:10"),  # 1. óra
+        ("09:20", "10:05"),  # 2. óra
+        ("10:20", "11:05"),  # 3. óra
+        ("11:15", "12:00"),  # 4. óra
+        ("12:20", "13:05"),  # 5. óra
+        ("13:25", "14:10"),  # 6. óra
+        ("14:20", "15:05"),  # 7. óra
+        ("15:15", "16:00"),  # 8. óra
+    ]
+    
     mulasztasok_data = []
     
     for mulasztas in mulasztasok:
-        # Convert mulasztas date + ora to datetime range
-        # Assume each lesson is 45 minutes starting at 8:00 AM + (ora * 45 minutes)
-        # This is a rough estimate - adjust based on actual school schedule
-        lesson_start_time = time(8, 0)  # 8:00 AM
-        lesson_duration_minutes = 45
-        
-        # Calculate lesson start datetime (timezone-naive)
-        lesson_start_naive = datetime.combine(
-            mulasztas.datum,
-            lesson_start_time
-        ) + timedelta(minutes=(mulasztas.ora - 1) * lesson_duration_minutes)
-        
-        lesson_end_naive = lesson_start_naive + timedelta(minutes=lesson_duration_minutes)
-        
-        # Make timezone-aware
-        lesson_start = timezone.make_aware(lesson_start_naive)
-        lesson_end = timezone.make_aware(lesson_end_naive)
+        # Convert mulasztas date + ora to datetime range using actual bell schedule
+        ora_index = mulasztas.ora  # 0-8
+        if ora_index < 0 or ora_index >= len(BELL_SCHEDULE):
+            # Invalid lesson number, skip or use default
+            lesson_start = timezone.make_aware(datetime.combine(mulasztas.datum, time(8, 0)))
+            lesson_end = lesson_start + timedelta(minutes=45)
+        else:
+            start_time_str, end_time_str = BELL_SCHEDULE[ora_index]
+            start_hour, start_min = map(int, start_time_str.split(':'))
+            end_hour, end_min = map(int, end_time_str.split(':'))
+            
+            lesson_start_naive = datetime.combine(mulasztas.datum, time(start_hour, start_min))
+            lesson_end_naive = datetime.combine(mulasztas.datum, time(end_hour, end_min))
+            
+            # Make timezone-aware
+            lesson_start = timezone.make_aware(lesson_start_naive)
+            lesson_end = timezone.make_aware(lesson_end_naive)
         
         # Check if any igazolas covers this mulasztas
         matched_igazolas = None
