@@ -390,6 +390,13 @@ def list_osztaly(request):
                     'leiras': tipus.leiras,
                     'beleszamit': tipus.beleszamit,
                     'iskolaerdeku': tipus.iskolaerdeku,
+                    'category': tipus.category,
+                    'category_emoji': tipus.category_emoji,
+                    'has_sub_form': tipus.has_sub_form,
+                    'sub_form_schema': tipus.sub_form_schema,
+                    'display_order': tipus.display_order,
+                    'supports_group_absence': tipus.supports_group_absence,
+                    'requires_studios': tipus.requires_studios,
                     'nem_fogado_osztalyok': None  # Avoid circular reference
                 } for tipus in osztaly.nem_fogadott_igazolas_tipusok.all()
             ]
@@ -434,6 +441,13 @@ def get_osztaly(request, osztaly_id: int):
                 'leiras': tipus.leiras,
                 'beleszamit': tipus.beleszamit,
                 'iskolaerdeku': tipus.iskolaerdeku,
+                'category': tipus.category,
+                'category_emoji': tipus.category_emoji,
+                'has_sub_form': tipus.has_sub_form,
+                'sub_form_schema': tipus.sub_form_schema,
+                'display_order': tipus.display_order,
+                'supports_group_absence': tipus.supports_group_absence,
+                'requires_studios': tipus.requires_studios,
                 'nem_fogado_osztalyok': None  # Avoid circular reference
             } for tipus in osztaly.nem_fogadott_igazolas_tipusok.all()
         ]
