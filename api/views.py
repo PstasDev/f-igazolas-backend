@@ -5456,7 +5456,7 @@ def get_permission_matrix(request):
 
 
 @api.post("/admin/igazolas-types/update-permission", response={200: dict, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Permissions"])
-def update_permission(request, payload: dict):
+def update_permission(request, payload: dict = Body(...)):
     """
     Update a single permission in the matrix.
     """
@@ -5497,7 +5497,7 @@ def update_permission(request, payload: dict):
 
 
 @api.post("/admin/igazolas-types/bulk-update-permissions", response={200: dict, 400: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Admin - Permissions"])
-def bulk_update_permissions(request, payload: dict):
+def bulk_update_permissions(request, payload: dict = Body(...)):
     """
     Update multiple permissions at once.
     """
