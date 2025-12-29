@@ -3222,7 +3222,7 @@ def analyze_mulasztas_coverage(user: User, include_igazolt: bool = False) -> dic
         'igazolt_count': igazolt_count,
         'nem_igazolt_count': nem_igazolt_count,
         'covered_by_igazolas': covered_count,
-        'not_covered': nem_igazolt_count - covered_count if not include_igazolt else len(mulasztasok) - covered_count,
+        'not_covered': nem_igazolt_count - covered_count,  # Always exclude igazolt from not_covered count
         'mulasztasok': mulasztasok_data
     }
 
