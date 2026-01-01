@@ -1043,7 +1043,20 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
                     'nev': str(osztaly)
                 } if osztaly else None
             },
-            'mulasztasok': list(igazolas.mulasztasok.all()),
+            'mulasztasok': [
+                {
+                    'id': mulasztas.id,
+                    'datum': mulasztas.datum,
+                    'ora': mulasztas.ora,
+                    'tantargy': mulasztas.tantargy,
+                    'tema': mulasztas.tema,
+                    'tipus': mulasztas.tipus,
+                    'igazolt': mulasztas.igazolt,
+                    'igazolas_tipusa': mulasztas.igazolas_tipusa,
+                    'rogzites_datuma': mulasztas.rogzites_datuma
+                }
+                for mulasztas in igazolas.mulasztasok.all()
+            ],
             'eleje': igazolas.eleje,
             'vege': igazolas.vege,
             'tipus': serialize_igazolas_tipus(igazolas.tipus),
@@ -1057,7 +1070,9 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
             'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
             'imgDriveURL': igazolas.imgDriveURL,
             'bkk_verification': igazolas.bkk_verification,
+            'sub_form_data': igazolas.sub_form_data,
             'allapot': igazolas.allapot,
+            'megjegyzes': None,
             'megjegyzes_tanar': igazolas.megjegyzes_tanar,
             'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
         }
@@ -1172,10 +1187,23 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
                         'nev': str(osztaly)
                     } if osztaly else None
                 },
-                'mulasztasok': list(igazolas.mulasztasok.all()),
+                'mulasztasok': [
+                    {
+                        'id': mulasztas.id,
+                        'datum': mulasztas.datum,
+                        'ora': mulasztas.ora,
+                        'tantargy': mulasztas.tantargy,
+                        'tema': mulasztas.tema,
+                        'tipus': mulasztas.tipus,
+                        'igazolt': mulasztas.igazolt,
+                        'igazolas_tipusa': mulasztas.igazolas_tipusa,
+                        'rogzites_datuma': mulasztas.rogzites_datuma
+                    }
+                    for mulasztas in igazolas.mulasztasok.all()
+                ],
                 'eleje': igazolas.eleje,
                 'vege': igazolas.vege,
-                'tipus': igazolas.tipus,
+                'tipus': serialize_igazolas_tipus(igazolas.tipus),
                 'rogzites_datuma': igazolas.rogzites_datuma,
                 'megjegyzes_diak': igazolas.megjegyzes_diak,
                 'diak': igazolas.diak,
@@ -1186,7 +1214,9 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
                 'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
                 'imgDriveURL': igazolas.imgDriveURL,
                 'bkk_verification': igazolas.bkk_verification,
+                'sub_form_data': igazolas.sub_form_data,
                 'allapot': igazolas.allapot,
+                'megjegyzes': None,
                 'megjegyzes_tanar': igazolas.megjegyzes_tanar,
                 'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
             }
@@ -1233,7 +1263,20 @@ def get_igazolas(request, igazolas_id: int):
                 'nev': str(osztaly)
             } if osztaly else None
         },
-        'mulasztasok': list(igazolas.mulasztasok.all()),
+        'mulasztasok': [
+            {
+                'id': mulasztas.id,
+                'datum': mulasztas.datum,
+                'ora': mulasztas.ora,
+                'tantargy': mulasztas.tantargy,
+                'tema': mulasztas.tema,
+                'tipus': mulasztas.tipus,
+                'igazolt': mulasztas.igazolt,
+                'igazolas_tipusa': mulasztas.igazolas_tipusa,
+                'rogzites_datuma': mulasztas.rogzites_datuma
+            }
+            for mulasztas in igazolas.mulasztasok.all()
+        ],
         'eleje': igazolas.eleje,
         'vege': igazolas.vege,
         'tipus': serialize_igazolas_tipus(igazolas.tipus),
@@ -1247,7 +1290,9 @@ def get_igazolas(request, igazolas_id: int):
         'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
         'imgDriveURL': igazolas.imgDriveURL,
         'bkk_verification': igazolas.bkk_verification,
+        'sub_form_data': igazolas.sub_form_data,
         'allapot': igazolas.allapot,
+        'megjegyzes': None,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
         'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
     }
@@ -1332,7 +1377,9 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
         'imgDriveURL': igazolas.imgDriveURL,
         'bkk_verification': igazolas.bkk_verification,
+        'sub_form_data': igazolas.sub_form_data,
         'allapot': igazolas.allapot,
+        'megjegyzes': None,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
         'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
     }
