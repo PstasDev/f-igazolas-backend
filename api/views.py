@@ -180,39 +180,6 @@ def get_teacher_class(user: User) -> Osztaly:
     return Osztaly.objects.filter(osztalyfonokok=user).first()
 
 
-def serialize_igazolas_tipus(tipus: IgazolasTipus) -> dict:
-    """
-    Serialize an IgazolasTipus instance to a dictionary.
-    
-    This properly handles the nem_fogado_osztalyok many-to-many relationship.
-    """
-    nem_fogado_osztalyok = [
-        {
-            'id': osztaly.id,
-            'tagozat': osztaly.tagozat,
-            'kezdes_eve': osztaly.kezdes_eve,
-            'nev': str(osztaly)
-        }
-        for osztaly in tipus.nem_fogado_osztalyok.all()
-    ]
-    
-    return {
-        'id': tipus.id,
-        'nev': tipus.nev,
-        'leiras': tipus.leiras,
-        'beleszamit': tipus.beleszamit,
-        'iskolaerdeku': tipus.iskolaerdeku,
-        'nem_fogado_osztalyok': nem_fogado_osztalyok,
-        'category': tipus.category,
-        'category_emoji': tipus.category_emoji,
-        'has_sub_form': tipus.has_sub_form,
-        'sub_form_schema': tipus.sub_form_schema,
-        'display_order': tipus.display_order,
-        'supports_group_absence': tipus.supports_group_absence,
-        'requires_studios': tipus.requires_studios
-    }
-
-
 # Authentication Endpoints
 
 @api.post("/login", response={200: TokenResponse, 401: ErrorResponse}, auth=None, tags=["Authentication"])
@@ -423,13 +390,6 @@ def list_osztaly(request):
                     'leiras': tipus.leiras,
                     'beleszamit': tipus.beleszamit,
                     'iskolaerdeku': tipus.iskolaerdeku,
-                    'category': tipus.category,
-                    'category_emoji': tipus.category_emoji,
-                    'has_sub_form': tipus.has_sub_form,
-                    'sub_form_schema': tipus.sub_form_schema,
-                    'display_order': tipus.display_order,
-                    'supports_group_absence': tipus.supports_group_absence,
-                    'requires_studios': tipus.requires_studios,
                     'nem_fogado_osztalyok': None  # Avoid circular reference
                 } for tipus in osztaly.nem_fogadott_igazolas_tipusok.all()
             ]
@@ -474,13 +434,6 @@ def get_osztaly(request, osztaly_id: int):
                 'leiras': tipus.leiras,
                 'beleszamit': tipus.beleszamit,
                 'iskolaerdeku': tipus.iskolaerdeku,
-                'category': tipus.category,
-                'category_emoji': tipus.category_emoji,
-                'has_sub_form': tipus.has_sub_form,
-                'sub_form_schema': tipus.sub_form_schema,
-                'display_order': tipus.display_order,
-                'supports_group_absence': tipus.supports_group_absence,
-                'requires_studios': tipus.requires_studios,
                 'nem_fogado_osztalyok': None  # Avoid circular reference
             } for tipus in osztaly.nem_fogadott_igazolas_tipusok.all()
         ]
@@ -851,6 +804,55 @@ def get_default_emoji(category: str) -> str:
     return emoji_map.get(category, '📝')
 
 
+@api.get("/igazolas-tipus/most-used", response={200: List[IgazolasTipusSchema], 401: ErrorResponse}, auth=jwt_auth, tags=["IgazolasTipus"])
+def get_most_used_igazolas_tipus(request):
+    """Get the 3 most used justification types for the authenticated student"""
+    from django.db.models import Count
+    
+    # Get the student's profile
+    profile, _ = Profile.objects.get_or_create(user=request.auth)
+    
+    # Get the most used types by counting igazolások created by this student
+    most_used = (
+        IgazolasTipus.objects
+        .filter(igazolas__profile=profile)
+        .annotate(usage_count=Count('igazolas'))
+        .order_by('-usage_count')[:3]
+        .prefetch_related('nem_fogado_osztalyok')
+    )
+    
+    result = []
+    for tipus in most_used:
+        nem_fogado_osztalyok = [
+            {
+                'id': osztaly.id,
+                'tagozat': osztaly.tagozat,
+                'kezdes_eve': osztaly.kezdes_eve,
+                'nev': str(osztaly)
+            }
+            for osztaly in tipus.nem_fogado_osztalyok.all()
+        ]
+        
+        tipus_data = {
+            'id': tipus.id,
+            'nev': tipus.nev,
+            'leiras': tipus.leiras,
+            'beleszamit': tipus.beleszamit,
+            'iskolaerdeku': tipus.iskolaerdeku,
+            'nem_fogado_osztalyok': nem_fogado_osztalyok,
+            'category': tipus.category,
+            'category_emoji': tipus.category_emoji,
+            'has_sub_form': tipus.has_sub_form,
+            'sub_form_schema': tipus.sub_form_schema,
+            'display_order': tipus.display_order,
+            'supports_group_absence': tipus.supports_group_absence,
+            'requires_studios': tipus.requires_studios
+        }
+        result.append(tipus_data)
+    
+    return 200, result
+
+
 @api.get("/igazolas-tipus/{tipus_id}", response={200: IgazolasTipusSchema, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["IgazolasTipus"])
 def get_igazolas_tipus(request, tipus_id: int):
     """Get justification type by ID (requires authentication)"""
@@ -1020,7 +1022,7 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
     logger.info(f"Cache metadata: {cache_metadata}")
     
     # Fetch igazolások for the teacher's class
-    igazolasok = teacher_profile.osztalyom_igazolasai().select_related('profile', 'tipus').prefetch_related('mulasztasok', 'tipus__nem_fogado_osztalyok')
+    igazolasok = teacher_profile.osztalyom_igazolasai().select_related('profile', 'tipus').prefetch_related('mulasztasok')
     result = []
     
     for igazolas in igazolasok:
@@ -1043,23 +1045,10 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
                     'nev': str(osztaly)
                 } if osztaly else None
             },
-            'mulasztasok': [
-                {
-                    'id': mulasztas.id,
-                    'datum': mulasztas.datum,
-                    'ora': mulasztas.ora,
-                    'tantargy': mulasztas.tantargy,
-                    'tema': mulasztas.tema,
-                    'tipus': mulasztas.tipus,
-                    'igazolt': mulasztas.igazolt,
-                    'igazolas_tipusa': mulasztas.igazolas_tipusa,
-                    'rogzites_datuma': mulasztas.rogzites_datuma
-                }
-                for mulasztas in igazolas.mulasztasok.all()
-            ],
+            'mulasztasok': list(igazolas.mulasztasok.all()),
             'eleje': igazolas.eleje,
             'vege': igazolas.vege,
-            'tipus': serialize_igazolas_tipus(igazolas.tipus),
+            'tipus': igazolas.tipus,
             'rogzites_datuma': igazolas.rogzites_datuma,
             'megjegyzes_diak': igazolas.megjegyzes_diak,
             'diak': igazolas.diak,
@@ -1070,9 +1059,7 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
             'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
             'imgDriveURL': igazolas.imgDriveURL,
             'bkk_verification': igazolas.bkk_verification,
-            'sub_form_data': igazolas.sub_form_data,
             'allapot': igazolas.allapot,
-            'megjegyzes': None,
             'megjegyzes_tanar': igazolas.megjegyzes_tanar,
             'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
         }
@@ -1164,7 +1151,7 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
     
     try:
         profile = Profile.objects.get(user=request.auth)
-        igazolasok = Igazolas.objects.filter(profile=profile).select_related('tipus').prefetch_related('mulasztasok', 'tipus__nem_fogado_osztalyok')
+        igazolasok = Igazolas.objects.filter(profile=profile).select_related('tipus').prefetch_related('mulasztasok')
         result = []
         
         for igazolas in igazolasok:
@@ -1187,23 +1174,10 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
                         'nev': str(osztaly)
                     } if osztaly else None
                 },
-                'mulasztasok': [
-                    {
-                        'id': mulasztas.id,
-                        'datum': mulasztas.datum,
-                        'ora': mulasztas.ora,
-                        'tantargy': mulasztas.tantargy,
-                        'tema': mulasztas.tema,
-                        'tipus': mulasztas.tipus,
-                        'igazolt': mulasztas.igazolt,
-                        'igazolas_tipusa': mulasztas.igazolas_tipusa,
-                        'rogzites_datuma': mulasztas.rogzites_datuma
-                    }
-                    for mulasztas in igazolas.mulasztasok.all()
-                ],
+                'mulasztasok': list(igazolas.mulasztasok.all()),
                 'eleje': igazolas.eleje,
                 'vege': igazolas.vege,
-                'tipus': serialize_igazolas_tipus(igazolas.tipus),
+                'tipus': igazolas.tipus,
                 'rogzites_datuma': igazolas.rogzites_datuma,
                 'megjegyzes_diak': igazolas.megjegyzes_diak,
                 'diak': igazolas.diak,
@@ -1214,9 +1188,7 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
                 'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
                 'imgDriveURL': igazolas.imgDriveURL,
                 'bkk_verification': igazolas.bkk_verification,
-                'sub_form_data': igazolas.sub_form_data,
                 'allapot': igazolas.allapot,
-                'megjegyzes': None,
                 'megjegyzes_tanar': igazolas.megjegyzes_tanar,
                 'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
             }
@@ -1242,7 +1214,7 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
 @api.get("/igazolas/{igazolas_id}", response={200: IgazolasSchema, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
 def get_igazolas(request, igazolas_id: int):
     """Get justification by ID (requires authentication)"""
-    igazolas = get_object_or_404(Igazolas.objects.select_related('profile', 'tipus').prefetch_related('mulasztasok', 'tipus__nem_fogado_osztalyok'), id=igazolas_id)
+    igazolas = get_object_or_404(Igazolas.objects.select_related('profile', 'tipus').prefetch_related('mulasztasok'), id=igazolas_id)
     osztaly = igazolas.profile.osztalyom()
     
     return 200, {
@@ -1263,23 +1235,10 @@ def get_igazolas(request, igazolas_id: int):
                 'nev': str(osztaly)
             } if osztaly else None
         },
-        'mulasztasok': [
-            {
-                'id': mulasztas.id,
-                'datum': mulasztas.datum,
-                'ora': mulasztas.ora,
-                'tantargy': mulasztas.tantargy,
-                'tema': mulasztas.tema,
-                'tipus': mulasztas.tipus,
-                'igazolt': mulasztas.igazolt,
-                'igazolas_tipusa': mulasztas.igazolas_tipusa,
-                'rogzites_datuma': mulasztas.rogzites_datuma
-            }
-            for mulasztas in igazolas.mulasztasok.all()
-        ],
+        'mulasztasok': list(igazolas.mulasztasok.all()),
         'eleje': igazolas.eleje,
         'vege': igazolas.vege,
-        'tipus': serialize_igazolas_tipus(igazolas.tipus),
+        'tipus': igazolas.tipus,
         'rogzites_datuma': igazolas.rogzites_datuma,
         'megjegyzes_diak': igazolas.megjegyzes_diak,
         'diak': igazolas.diak,
@@ -1290,9 +1249,7 @@ def get_igazolas(request, igazolas_id: int):
         'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
         'imgDriveURL': igazolas.imgDriveURL,
         'bkk_verification': igazolas.bkk_verification,
-        'sub_form_data': igazolas.sub_form_data,
         'allapot': igazolas.allapot,
-        'megjegyzes': None,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
         'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
     }
@@ -1366,7 +1323,7 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         'mulasztasok': [],
         'eleje': igazolas.eleje,
         'vege': igazolas.vege,
-        'tipus': serialize_igazolas_tipus(igazolas.tipus),
+        'tipus': igazolas.tipus,
         'rogzites_datuma': igazolas.rogzites_datuma,
         'megjegyzes_diak': igazolas.megjegyzes_diak,
         'diak': igazolas.diak,
@@ -1377,9 +1334,7 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
         'imgDriveURL': igazolas.imgDriveURL,
         'bkk_verification': igazolas.bkk_verification,
-        'sub_form_data': igazolas.sub_form_data,
         'allapot': igazolas.allapot,
-        'megjegyzes': None,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
         'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
     }
