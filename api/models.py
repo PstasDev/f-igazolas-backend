@@ -87,9 +87,14 @@ class Osztaly(models.Model):
 
     def osztaly_igazolasai(self):
         return Igazolas.objects.filter(profile__user__in=self.tanulok.all())
+    
+    @property
+    def nev(self):
+        """Property to provide the class name for schema serialization"""
+        return f"{self.kezdes_eve}{self.tagozat}" # 23A, 22B
 
     def __str__(self):
-        return f"{self.kezdes_eve}{self.tagozat}" # 23A, 22B
+        return self.nev
     
     class Meta:
         verbose_name = 'Osztály'

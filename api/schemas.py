@@ -11,6 +11,9 @@ class UserSchema(Schema):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     email: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
 
 
 # Authentication schemas
@@ -38,12 +41,18 @@ class OsztalySimpleSchema(Schema):
     tagozat: str
     kezdes_eve: int
     nev: str
+    
+    class Config:
+        from_attributes = True
 
 
 class ProfileSchema(Schema):
     id: int
     user: UserSchema
     osztalyom: Optional[OsztalySimpleSchema] = None
+    
+    class Config:
+        from_attributes = True
 
 
 # Osztaly schemas
@@ -55,6 +64,9 @@ class OsztalySchema(Schema):
     tanulok: List[UserSchema]
     osztalyfonokok: List[UserSchema]
     nem_fogadott_igazolas_tipusok: Optional[List['IgazolasTipusSchema']] = None
+    
+    class Config:
+        from_attributes = True
 
 
 # Mulasztas schemas
@@ -68,6 +80,9 @@ class MulasztasSchema(Schema):
     igazolt: bool
     igazolas_tipusa: Optional[str] = None
     rogzites_datuma: datetime  # DateField in model
+    
+    class Config:
+        from_attributes = True
 
 
 # IgazolasTipus schemas
@@ -86,6 +101,9 @@ class IgazolasTipusSchema(Schema):
     display_order: int
     supports_group_absence: bool
     requires_studios: bool
+    
+    class Config:
+        from_attributes = True
 
 
 # Igazolas schemas
@@ -111,6 +129,9 @@ class IgazolasSchema(Schema):
     allapot: str
     megjegyzes_tanar: Optional[str] = None
     kretaban_rogzitettem: bool
+    
+    class Config:
+        from_attributes = True
 
 
 class IgazolasCreateRequest(Schema):
