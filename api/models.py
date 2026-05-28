@@ -641,5 +641,5 @@ class Passkey(models.Model):
 
     class Meta:
         verbose_name = "Jelkulcs"
-        verbose_name_plural = "Jelkulsok"
+        verbose_name_plural = "Jelkulcsok"
         ordering = ["-created_at"]

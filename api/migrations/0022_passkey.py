@@ -28,7 +28,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'verbose_name': 'Jelkulcs',
-                'verbose_name_plural': 'Jelkulsok',
+                'verbose_name_plural': 'Jelkulcsok',
                 'ordering': ['-created_at'],
             },
         ),
