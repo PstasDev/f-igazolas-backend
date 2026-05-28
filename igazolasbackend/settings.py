@@ -185,6 +185,15 @@ RESET_TOKEN_EXPIRY_MINUTES = config('RESET_TOKEN_EXPIRY_MINUTES', default=10, ca
 # BKK API Configuration
 BKK_TOKEN = config('BKK_TOKEN', default='')
 
+# WebAuthn / Passkey Configuration
+WEBAUTHN_RP_ID = config('WEBAUTHN_RP_ID', default='localhost')
+WEBAUTHN_RP_NAME = config('WEBAUTHN_RP_NAME', default='Igazoláskezelő')
+WEBAUTHN_ORIGINS = config(
+    'WEBAUTHN_ORIGINS',
+    default='http://localhost:3000,http://127.0.0.1:3000,https://igazolas.szlg.info',
+    cast=lambda v: [s.strip() for s in v.split(',') if s.strip()],
+)
+
 # FTV External API Configuration
 FTV_EXTERNAL_ACCESS_TOKEN = config('FTV_EXTERNAL_ACCESS_TOKEN', default='')
 

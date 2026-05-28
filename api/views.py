@@ -85,6 +85,11 @@ api = NinjaAPI(
 # Initialize JWT authentication
 jwt_auth = JWTAuth()
 
+# Register passkey + change-password endpoints (defined in a separate module
+# to keep this file manageable). Must run after `api` and `jwt_auth` exist.
+from .passkey_views import register_passkey_endpoints  # noqa: E402
+register_passkey_endpoints(api, jwt_auth)
+
 
 # BKK GTFS-RT Endpoints
 

@@ -620,3 +620,26 @@ class APIMetrics(models.Model):
             models.Index(fields=['endpoint_path', 'http_method']),
             models.Index(fields=['-recorded_at']),
         ]
+
+
+
+class Passkey(models.Model):
+    """
+    WebAuthn credential (passkey) belonging to a user.
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="passkeys")
+    credential_id = models.BinaryField(unique=True)
+    public_key = models.BinaryField()
+    sign_count = models.BigIntegerField(default=0)
+    transports = models.CharField(max_length=200, blank=True, default="")
+    name = models.CharField(max_length=80, blank=True, default="Passkey")
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.user.username} - {self.name}"
+
+    class Meta:
+        verbose_name = "Jelkulcs"
+        verbose_name_plural = "Jelkulsok"
+        ordering = ["-created_at"]
