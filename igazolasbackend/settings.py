@@ -144,6 +144,15 @@ USE_TZ = False
 STATIC_URL = '__szlg/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
+# Media files (user uploads – served exclusively through the protected API endpoint)
+MEDIA_URL = '__szlg/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
+# Image upload configuration
+IMAGE_MAX_UPLOAD_SIZE_MB = config('IMAGE_MAX_UPLOAD_SIZE_MB', default=10, cast=int)   # raw upload limit
+IMAGE_MAX_DIMENSION = config('IMAGE_MAX_DIMENSION', default=1920, cast=int)           # longest edge in px
+IMAGE_QUALITY = config('IMAGE_QUALITY', default=85, cast=int)                         # JPEG quality
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
