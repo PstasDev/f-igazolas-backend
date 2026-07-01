@@ -168,11 +168,12 @@ class IgazolasAdmin(admin.ModelAdmin):
             'fields': ('mulasztasok',)
         }),
         ('Diák adatok', {
-            'fields': ('megjegyzes_diak', 'diak_extra_ido_elotte', 'diak_extra_ido_utana', 'imgDriveURL')
+            'fields': ('megjegyzes_diak', 'diak_extra_ido_elotte', 'diak_extra_ido_utana')
         }),
         ('Csatolt kép', {
-            'fields': ('image', 'image_preview'),
-            'description': 'A kép megtekintése csak az igazolás beadójának és osztályfőnökének engedélyezett.'
+            'fields': ('image', 'image_preview', 'imgDriveURL'),
+            'description': 'A kép megtekintése csak az igazolás beadójának és osztályfőnökének engedélyezett. '
+                           'Az "imgDriveURL" mező a régi Google Drive alapú tároláshoz tartozik.'
         }),
         ('Forrás és típus', {
             'fields': ('diak', 'ftv', 'korrigalt', 'bkk_verification')
