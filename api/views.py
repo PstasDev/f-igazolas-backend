@@ -6,7 +6,7 @@ from django.db import transaction
 from django.utils import timezone
 from django_ratelimit.decorators import ratelimit
 from django.views.decorators.csrf import csrf_exempt
-from django.http import HttpResponse
+from django.http import HttpResponse, FileResponse
 from django.conf import settings
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -72,6 +72,7 @@ from .ftv_sync import (
     FTVSyncError, 
     get_cache_metadata
 )
+from .utils import compress_igazolas_image
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,29 @@ jwt_auth = JWTAuth()
 # to keep this file manageable). Must run after `api` and `jwt_auth` exist.
 from .passkey_views import register_passkey_endpoints  # noqa: E402
 register_passkey_endpoints(api, jwt_auth)
+
+
+def _igazolas_image_url(request, igazolas) -> Optional[str]:
+    """Return the protected image URL if an image is attached, else None."""
+    if igazolas.image:
+        return request.build_absolute_uri(f'/api/igazolas/{igazolas.id}/image')
+    return None
+
+
+def _can_view_igazolas_image(user, igazolas) -> bool:
+    """
+    Return True if *user* is permitted to view the image attached to *igazolas*.
+    Permitted users: the submitter student, and any osztályfőnök of that student's class.
+    Superuser status alone does NOT grant access.
+    """
+    # The student who owns the igazolás
+    if igazolas.profile.user == user:
+        return True
+    # Any osztályfőnök of that student's class
+    osztaly = igazolas.profile.osztalyom()
+    if osztaly and user in osztaly.osztalyfonokok.all():
+        return True
+    return False
 
 
 # BKK GTFS-RT Endpoints
@@ -1077,6 +1101,7 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
             'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
             'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
             'imgDriveURL': igazolas.imgDriveURL,
+            'image_url': _igazolas_image_url(request, igazolas),
             'bkk_verification': igazolas.bkk_verification,
             'allapot': igazolas.allapot,
             'megjegyzes_tanar': igazolas.megjegyzes_tanar,
@@ -1206,6 +1231,7 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
                 'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
                 'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
                 'imgDriveURL': igazolas.imgDriveURL,
+                'image_url': _igazolas_image_url(request, igazolas),
                 'bkk_verification': igazolas.bkk_verification,
                 'allapot': igazolas.allapot,
                 'megjegyzes_tanar': igazolas.megjegyzes_tanar,
@@ -1267,11 +1293,96 @@ def get_igazolas(request, igazolas_id: int):
         'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
         'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
         'imgDriveURL': igazolas.imgDriveURL,
+        'image_url': _igazolas_image_url(request, igazolas),
         'bkk_verification': igazolas.bkk_verification,
         'allapot': igazolas.allapot,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
         'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
     }
+
+
+@api.post("/igazolas/{igazolas_id}/image", response={200: dict, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
+def upload_igazolas_image(request, igazolas_id: int):
+    """
+    Upload (or replace) the image attached to an Igazolás record.
+
+    Permitted users: the student who owns the igazolás, or any osztályfőnök of their class.
+
+    The image is validated (type, file-size cap) and compressed before storage:
+    - Accepted types: JPEG, PNG, WebP
+    - Maximum raw upload size: IMAGE_MAX_UPLOAD_SIZE_MB MB (default 10 MB)
+    - After compression: max IMAGE_MAX_DIMENSION px on the longest edge, JPEG quality IMAGE_QUALITY
+    """
+    igazolas = get_object_or_404(Igazolas.objects.select_related('profile__user'), id=igazolas_id)
+
+    if not _can_view_igazolas_image(request.auth, igazolas):
+        return 403, {'error': 'Forbidden', 'detail': 'Nincs jogosultságod ehhez az igazoláshoz.'}
+
+    if 'image' not in request.FILES:
+        return 400, {'error': 'Bad request', 'detail': 'Kép fájl hiányzik. Töltsd fel a képet "image" kulccsal.'}
+
+    try:
+        compressed = compress_igazolas_image(request.FILES['image'])
+    except ValueError as exc:
+        return 400, {'error': 'Bad request', 'detail': str(exc)}
+
+    # Delete old image file if present
+    if igazolas.image:
+        igazolas.image.delete(save=False)
+
+    igazolas.image.save(f'igazolas_{igazolas_id}.jpg', compressed, save=True)
+    logger.info(f"User {request.auth.username} uploaded image for igazolas #{igazolas_id}")
+
+    return 200, {
+        'id': igazolas.id,
+        'image_url': _igazolas_image_url(request, igazolas),
+        'message': 'Kép sikeresen feltöltve.'
+    }
+
+
+@api.get("/igazolas/{igazolas_id}/image", auth=jwt_auth, tags=["Igazolas"])
+def get_igazolas_image(request, igazolas_id: int):
+    """
+    Serve the image attached to an Igazolás record.
+
+    Permitted users: the student who owns the igazolás, or any osztályfőnök of their class.
+    Superuser status alone does NOT grant access.
+    """
+    igazolas = get_object_or_404(Igazolas.objects.select_related('profile__user'), id=igazolas_id)
+
+    if not _can_view_igazolas_image(request.auth, igazolas):
+        return HttpResponse(status=403, content='Nincs jogosultságod a kép megtekintéséhez.',
+                            content_type='text/plain; charset=utf-8')
+
+    if not igazolas.image:
+        return HttpResponse(status=404, content='Ehhez az igazoláshoz nem tartozik kép.',
+                            content_type='text/plain; charset=utf-8')
+
+    try:
+        return FileResponse(igazolas.image.open('rb'), content_type='image/jpeg')
+    except FileNotFoundError:
+        return HttpResponse(status=404, content='A kép fájl nem található.',
+                            content_type='text/plain; charset=utf-8')
+
+
+@api.delete("/igazolas/{igazolas_id}/image", response={200: dict, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
+def delete_igazolas_image(request, igazolas_id: int):
+    """
+    Delete the image attached to an Igazolás record.
+
+    Permitted users: the student who owns the igazolás, or any osztályfőnök of their class.
+    """
+    igazolas = get_object_or_404(Igazolas.objects.select_related('profile__user'), id=igazolas_id)
+
+    if not _can_view_igazolas_image(request.auth, igazolas):
+        return 403, {'error': 'Forbidden', 'detail': 'Nincs jogosultságod ehhez az igazoláshoz.'}
+
+    if not igazolas.image:
+        return 404, {'error': 'Not found', 'detail': 'Ehhez az igazoláshoz nem tartozik kép.'}
+
+    igazolas.image.delete(save=True)
+    logger.info(f"User {request.auth.username} deleted image for igazolas #{igazolas_id}")
+    return 200, {'id': igazolas.id, 'message': 'Kép sikeresen törölve.'}
 
 
 @api.post("/igazolas", response={201: IgazolasSchema, 400: ErrorResponse, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
@@ -1352,6 +1463,7 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
         'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
         'imgDriveURL': igazolas.imgDriveURL,
+        'image_url': _igazolas_image_url(request, igazolas),
         'bkk_verification': igazolas.bkk_verification,
         'allapot': igazolas.allapot,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,

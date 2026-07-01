@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
+from django.utils.html import format_html
 from .models import (
     Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas, 
     SystemMessage, TanitasiSzunet, Override, APIMetrics
@@ -156,7 +157,7 @@ class IgazolasAdmin(admin.ModelAdmin):
     date_hierarchy = 'rogzites_datuma'
     raw_id_fields = ['profile', 'created_by_group_leader']
     filter_horizontal = ['mulasztasok']
-    readonly_fields = ['rogzites_datuma', 'group_id']
+    readonly_fields = ['rogzites_datuma', 'group_id', 'image_preview']
     ordering = ['-rogzites_datuma']
     
     fieldsets = (
@@ -167,7 +168,12 @@ class IgazolasAdmin(admin.ModelAdmin):
             'fields': ('mulasztasok',)
         }),
         ('Diák adatok', {
-            'fields': ('megjegyzes_diak', 'diak_extra_ido_elotte', 'diak_extra_ido_utana', 'imgDriveURL')
+            'fields': ('megjegyzes_diak', 'diak_extra_ido_elotte', 'diak_extra_ido_utana')
+        }),
+        ('Csatolt kép', {
+            'fields': ('image', 'image_preview', 'imgDriveURL'),
+            'description': 'A kép megtekintése csak az igazolás beadójának és osztályfőnökének engedélyezett. '
+                           'Az "imgDriveURL" mező a régi Google Drive alapú tároláshoz tartozik.'
         }),
         ('Forrás és típus', {
             'fields': ('diak', 'ftv', 'korrigalt', 'bkk_verification')
@@ -204,6 +210,43 @@ class IgazolasAdmin(admin.ModelAdmin):
             return obj.megjegyzes_diak[:50] + '...' if len(obj.megjegyzes_diak) > 50 else obj.megjegyzes_diak
         return '-'
     get_megjegyzes_diak.short_description = 'Indoklás'
+
+    def image_preview(self, obj):
+        """
+        Show a permission-aware preview of the attached image.
+        Superusers who are not the submitter student or an osztályfőnök of the student's
+        class see an informational message instead of the image.
+        """
+        if not obj.image:
+            return '—'
+        # Check whether the current admin user is permitted to view the image.
+        # `self.current_request` is set in `change_view` / `changeform_view`.
+        admin_user = getattr(self, '_current_request', None)
+        if admin_user is None:
+            return format_html('<span>⚠️ Kép kezelése elérhető, de előnézet nem jeleníthető meg.</span>')
+
+        user = admin_user.user
+        # Is this admin the student who submitted?
+        if obj.profile.user == user:
+            permitted = True
+        else:
+            osztaly = obj.profile.osztalyom()
+            permitted = bool(osztaly and user in osztaly.osztalyfonokok.all())
+
+        if not permitted:
+            return format_html(
+                '<span style="color:#c0392b;">⛔ Nincs jogosultságod a kép megtekintéséhez '
+                '(csak a diák és az osztályfőnök láthatja).</span>'
+            )
+        # Build a link to the protected API endpoint
+        url = f'/api/igazolas/{obj.pk}/image'
+        return format_html('<a href="{}" target="_blank">🖼 Kép megtekintése (védett link)</a>', url)
+
+    image_preview.short_description = 'Kép előnézet'
+
+    def changeform_view(self, request, *args, **kwargs):
+        self._current_request = request
+        return super().changeform_view(request, *args, **kwargs)
 
 
 # SystemMessage Admin

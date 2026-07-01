@@ -124,6 +124,7 @@ class IgazolasSchema(Schema):
     diak_extra_ido_elotte: Optional[int] = None
     diak_extra_ido_utana: Optional[int] = None
     imgDriveURL: Optional[str] = None
+    image_url: Optional[str] = None
     bkk_verification: Optional[dict] = None
     sub_form_data: Optional[dict] = None  # New field for sub-form data
     allapot: str

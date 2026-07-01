@@ -221,6 +221,11 @@ class Igazolas(models.Model):
     # URL amire feltölti a diák a fényképet, nem Image repsonse -> Google Drive
     imgDriveURL = models.URLField(max_length=300, null=True, blank=True)
 
+    # Compressed image stored on this server (replaces / complements imgDriveURL)
+    image = models.ImageField(upload_to='igazolas_images/', null=True, blank=True,
+                              verbose_name='Kép',
+                              help_text='Igazoláshoz csatolt, tömörített kép')
+
     # BKK Verification - JSON field for BKK related data
     bkk_verification = models.JSONField(null=True, blank=True)
     
