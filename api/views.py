@@ -23,6 +23,7 @@ from .schemas import (
     LoginRequest, TokenResponse, ErrorResponse,
     ProfileSchema, OsztalySchema, MulasztasSchema,
     IgazolasTipusSchema, IgazolasSchema, IgazolasCreateRequest,
+    IgazolasEditRequest, IgazolasUndoResponse,
     OsztalySimpleSchema, QuickActionRequest, BulkQuickActionRequest,
     QuickActionResponse, BulkQuickActionResponse, TeacherCommentUpdateRequest,
     TeacherCommentUpdateResponse, DiakjaSignleSchema, DiakjaCreateRequest, 
@@ -1128,7 +1129,7 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
     logger.info(f"Cache metadata: {cache_metadata}")
 
     # Fetch igazolások for all of the teacher's active classes
-    igazolasok = teacher_profile.osztalyom_igazolasai().select_related('profile', 'tipus').prefetch_related('mulasztasok')
+    igazolasok = teacher_profile.osztalyom_igazolasai().filter(undoed=False).select_related('profile', 'tipus').prefetch_related('mulasztasok')
     result = []
     
     for igazolas in igazolasok:
@@ -1168,7 +1169,8 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
             'bkk_verification': igazolas.bkk_verification,
             'allapot': igazolas.allapot,
             'megjegyzes_tanar': igazolas.megjegyzes_tanar,
-            'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
+            'kretaban_rogzitettem': igazolas.kretaban_rogzitettem,
+            'undoed': igazolas.undoed
         }
         result.append(igazolas_data)
     
@@ -1258,7 +1260,7 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
     
     try:
         profile = Profile.objects.get(user=request.auth)
-        igazolasok = Igazolas.objects.filter(profile=profile).select_related('tipus').prefetch_related('mulasztasok')
+        igazolasok = Igazolas.objects.filter(profile=profile, undoed=False).select_related('tipus').prefetch_related('mulasztasok')
         result = []
         
         for igazolas in igazolasok:
@@ -1298,7 +1300,8 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
                 'bkk_verification': igazolas.bkk_verification,
                 'allapot': igazolas.allapot,
                 'megjegyzes_tanar': igazolas.megjegyzes_tanar,
-                'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
+                'kretaban_rogzitettem': igazolas.kretaban_rogzitettem,
+                'undoed': igazolas.undoed
             }
             result.append(igazolas_data)
         
@@ -1323,6 +1326,8 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
 def get_igazolas(request, igazolas_id: int):
     """Get justification by ID (requires authentication)"""
     igazolas = get_object_or_404(Igazolas.objects.select_related('profile', 'tipus').prefetch_related('mulasztasok'), id=igazolas_id)
+    if igazolas.undoed:
+        return 404, {'error': 'Not found', 'detail': 'Igazolas not found'}
     osztaly = igazolas.profile.osztalyom()
     
     return 200, {
@@ -1360,7 +1365,8 @@ def get_igazolas(request, igazolas_id: int):
         'bkk_verification': igazolas.bkk_verification,
         'allapot': igazolas.allapot,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
-        'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
+        'kretaban_rogzitettem': igazolas.kretaban_rogzitettem,
+        'undoed': igazolas.undoed
     }
 
 
@@ -1531,7 +1537,149 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         'bkk_verification': igazolas.bkk_verification,
         'allapot': igazolas.allapot,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
-        'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
+        'kretaban_rogzitettem': igazolas.kretaban_rogzitettem,
+        'undoed': igazolas.undoed
+    }
+
+
+# Edit and Undo Endpoints (student-facing)
+
+CLOSED_STATUSES = {'Elfogadva'}
+
+
+@api.put("/igazolas/{igazolas_id}", response={200: IgazolasSchema, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
+def edit_igazolas(request, igazolas_id: int, data: IgazolasEditRequest):
+    """
+    Edit an existing igazolás record.
+
+    Only the student who owns the record can edit it.
+    Editing is only allowed when the record is in 'Függőben' (pending) or 'Elutasítva' (denied) status.
+    Approved ('Elfogadva') records are closed and cannot be changed.
+    """
+    try:
+        igazolas = Igazolas.objects.select_related('profile__user', 'tipus').get(id=igazolas_id)
+    except Igazolas.DoesNotExist:
+        return 404, {'error': 'Not found', 'detail': f'Igazolas with id {igazolas_id} does not exist'}
+
+    if igazolas.undoed:
+        return 404, {'error': 'Not found', 'detail': f'Igazolas with id {igazolas_id} does not exist'}
+
+    # Only the owning student can edit
+    if igazolas.profile.user != request.auth:
+        return 403, {'error': 'Forbidden', 'detail': 'Only the owner can edit this igazolás'}
+
+    # Closed (approved) records cannot be changed
+    if igazolas.allapot in CLOSED_STATUSES:
+        return 403, {'error': 'Forbidden', 'detail': 'Approved igazolások cannot be edited'}
+
+    # Apply the provided fields
+    if data.eleje is not None or data.vege is not None:
+        new_eleje = data.eleje if data.eleje is not None else igazolas.eleje
+        new_vege = data.vege if data.vege is not None else igazolas.vege
+        if new_eleje >= new_vege:
+            return 400, {'error': 'Validation error', 'detail': 'End time must be after start time'}
+        igazolas.eleje = new_eleje
+        igazolas.vege = new_vege
+
+    if data.tipus is not None:
+        try:
+            igazolas.tipus = IgazolasTipus.objects.get(id=data.tipus)
+        except IgazolasTipus.DoesNotExist:
+            return 404, {'error': 'Not found', 'detail': f'IgazolasTipus with id {data.tipus} does not exist'}
+
+    if data.megjegyzes_diak is not None:
+        igazolas.megjegyzes_diak = data.megjegyzes_diak
+
+    if data.imgDriveURL is not None:
+        igazolas.imgDriveURL = data.imgDriveURL
+
+    if data.bkk_verification is not None:
+        igazolas.bkk_verification = data.bkk_verification
+
+    if data.sub_form_data is not None:
+        igazolas.sub_form_data = data.sub_form_data
+
+    if data.reszletes_idopontok is not None:
+        igazolas.reszletes_idopontok = data.reszletes_idopontok
+
+    # Editing resets the status to Függőben so the teacher can review again
+    igazolas.allapot = 'Függőben'
+    igazolas.save()
+
+    osztaly = igazolas.profile.osztalyom()
+    return 200, {
+        'id': igazolas.id,
+        'profile': {
+            'id': igazolas.profile.id,
+            'user': {
+                'id': igazolas.profile.user.id,
+                'username': igazolas.profile.user.username,
+                'first_name': igazolas.profile.user.first_name,
+                'last_name': igazolas.profile.user.last_name,
+                'email': igazolas.profile.user.email
+            },
+            'osztalyom': {
+                'id': osztaly.id,
+                'tagozat': osztaly.tagozat,
+                'kezdes_eve': osztaly.kezdes_eve,
+                'nev': str(osztaly)
+            } if osztaly else None
+        },
+        'mulasztasok': list(igazolas.mulasztasok.all()),
+        'eleje': igazolas.eleje,
+        'vege': igazolas.vege,
+        'tipus': igazolas.tipus,
+        'rogzites_datuma': igazolas.rogzites_datuma,
+        'megjegyzes_diak': igazolas.megjegyzes_diak,
+        'diak': igazolas.diak,
+        'ftv': igazolas.ftv,
+        'korrigalt': igazolas.korrigalt,
+        'ftv_hianyzas_id': igazolas.ftv_hianyzas_id,
+        'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
+        'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
+        'imgDriveURL': igazolas.imgDriveURL,
+        'image_url': _igazolas_image_url(request, igazolas),
+        'bkk_verification': igazolas.bkk_verification,
+        'allapot': igazolas.allapot,
+        'megjegyzes_tanar': igazolas.megjegyzes_tanar,
+        'kretaban_rogzitettem': igazolas.kretaban_rogzitettem,
+        'undoed': igazolas.undoed
+    }
+
+
+@api.post("/igazolas/{igazolas_id}/undo", response={200: IgazolasUndoResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
+def undo_igazolas(request, igazolas_id: int):
+    """
+    Undo (withdraw) an igazolás record.
+
+    Sets undoed=True on the record, keeping it in the database but hiding it from all
+    future responses. Only the student who owns the record can undo it.
+    Undo is only allowed when the record is in 'Függőben' (pending) or 'Elutasítva' (denied) status.
+    Approved ('Elfogadva') records are closed and cannot be undone.
+    """
+    try:
+        igazolas = Igazolas.objects.select_related('profile__user').get(id=igazolas_id)
+    except Igazolas.DoesNotExist:
+        return 404, {'error': 'Not found', 'detail': f'Igazolas with id {igazolas_id} does not exist'}
+
+    if igazolas.undoed:
+        return 404, {'error': 'Not found', 'detail': f'Igazolas with id {igazolas_id} does not exist'}
+
+    # Only the owning student can undo
+    if igazolas.profile.user != request.auth:
+        return 403, {'error': 'Forbidden', 'detail': 'Only the owner can undo this igazolás'}
+
+    # Closed (approved) records cannot be undone
+    if igazolas.allapot in CLOSED_STATUSES:
+        return 403, {'error': 'Forbidden', 'detail': 'Approved igazolások cannot be undone'}
+
+    igazolas.undoed = True
+    igazolas.save()
+
+    return 200, {
+        'id': igazolas.id,
+        'undoed': igazolas.undoed,
+        'message': 'Igazolás successfully withdrawn'
     }
 
 
@@ -1902,7 +2050,7 @@ def get_diakjaim(request):
         # Get student's profile and igazolások
         try:
             profile = Profile.objects.get(user=student)
-            igazolasok = Igazolas.objects.filter(profile=profile).select_related('tipus').order_by('-rogzites_datuma')
+            igazolasok = Igazolas.objects.filter(profile=profile, undoed=False).select_related('tipus').order_by('-rogzites_datuma')
         except Profile.DoesNotExist:
             # Create profile if it doesn't exist
             profile = Profile.objects.create(user=student)

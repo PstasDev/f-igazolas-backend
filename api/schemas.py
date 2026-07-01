@@ -132,9 +132,27 @@ class IgazolasSchema(Schema):
     allapot: str
     megjegyzes_tanar: Optional[str] = None
     kretaban_rogzitettem: bool
+    undoed: bool = False
     
     class Config:
         from_attributes = True
+
+
+class IgazolasEditRequest(Schema):
+    eleje: Optional[datetime] = None
+    vege: Optional[datetime] = None
+    tipus: Optional[int] = None  # IgazolasTipus ID
+    megjegyzes_diak: Optional[str] = None
+    imgDriveURL: Optional[str] = None
+    bkk_verification: Optional[dict] = None
+    sub_form_data: Optional[dict] = None
+    reszletes_idopontok: Optional[list] = None
+
+
+class IgazolasUndoResponse(Schema):
+    id: int
+    undoed: bool
+    message: str
 
 
 class IgazolasCreateRequest(Schema):
@@ -196,6 +214,7 @@ class IgazolasSimpleSchema(Schema):
     megjegyzes_diak: Optional[str] = None
     bkk_verification: Optional[dict] = None
     reszletes_idopontok: Optional[list] = None  # Detailed intervals for non-contiguous absences
+    undoed: bool = False
 
 
 class DiakjaSignleSchema(Schema):

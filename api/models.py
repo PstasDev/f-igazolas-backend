@@ -266,6 +266,9 @@ class Igazolas(models.Model):
     archived = models.BooleanField(default=False, verbose_name="Archivált", help_text="Az igazolás archivált státuszban van")
     academic_year = models.CharField(max_length=20, null=True, blank=True, verbose_name="Tanév", help_text="Pl. 2024/2025")
 
+    # Visszavonás: a diák visszavonja az igazolást (nem törlődik, csak nem látszik)
+    undoed = models.BooleanField(default=False, verbose_name="Visszavont", help_text="A diák visszavonta az igazolást")
+
     # Tanár tölti ki
 
     allapotok = [
