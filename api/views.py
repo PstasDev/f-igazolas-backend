@@ -1427,7 +1427,8 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         diak_extra_ido_utana=None,
         imgDriveURL=data.imgDriveURL,
         bkk_verification=data.bkk_verification,
-        sub_form_data=data.sub_form_data  # New field
+        sub_form_data=data.sub_form_data,  # Sub-form data
+        reszletes_idopontok=data.reszletes_idopontok  # Detailed intervals
     )
     
     osztaly = igazolas.profile.osztalyom()
@@ -4329,7 +4330,9 @@ def create_group_igazolas(request, eleje: datetime, vege: datetime, tipus: int,
                          additional_student_ids: List[int] = Body(...),
                          megjegyzes_diak: Optional[str] = None,
                          imgDriveURL: Optional[str] = None,
-                         bkk_verification: Optional[dict] = None):
+                         bkk_verification: Optional[dict] = None,
+                         sub_form_data: Optional[dict] = None,
+                         reszletes_idopontok: Optional[list] = None):
     """
     Create group igazolás for multiple students.
     
@@ -4404,6 +4407,7 @@ def create_group_igazolas(request, eleje: datetime, vege: datetime, tipus: int,
             imgDriveURL=imgDriveURL,
             bkk_verification=bkk_verification,
             sub_form_data=sub_form_data,  # New field
+            reszletes_idopontok=reszletes_idopontok,
             diak=True,
             ftv=False,
             group_id=group_id,
@@ -4427,6 +4431,7 @@ def create_group_igazolas(request, eleje: datetime, vege: datetime, tipus: int,
                 imgDriveURL=imgDriveURL,
                 bkk_verification=bkk_verification,
                 sub_form_data=sub_form_data,  # New field
+                reszletes_idopontok=reszletes_idopontok,
                 diak=False,  # Not created by student themselves
                 ftv=False,
                 group_id=group_id,
@@ -5075,7 +5080,8 @@ def get_eligible_students_for_teacher(request):
 @api.post("/teachers/igazolasok/create-for-student", response={201: dict, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Teacher - Create Igazolas"])
 def teacher_create_igazolas_for_student(request, student_id: int = Body(...), eleje: datetime = Body(...), 
                                        vege: datetime = Body(...), tipus: int = Body(...),
-                                       megjegyzes_diak: Optional[str] = Body(None)):
+                                       megjegyzes_diak: Optional[str] = Body(None),
+                                       reszletes_idopontok: Optional[list] = Body(None)):
     """
     Teacher creates igazolás on behalf of a student.
     
@@ -5139,6 +5145,7 @@ def teacher_create_igazolas_for_student(request, student_id: int = Body(...), el
         diak=False,  # Teacher-created
         ftv=False,
         korrigalt=False,
+        reszletes_idopontok=reszletes_idopontok,
         allapot='Elfogadva'  # Auto-approve teacher-created
     )
     
@@ -5154,7 +5161,8 @@ def teacher_create_igazolas_for_student(request, student_id: int = Body(...), el
 @api.post("/teachers/igazolasok/create-bulk", response={201: dict, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Teacher - Create Igazolas"])
 def teacher_bulk_create_igazolas(request, student_ids: List[int] = Body(...), eleje: datetime = Body(...),
                                  vege: datetime = Body(...), tipus: int = Body(...),
-                                 megjegyzes_diak: Optional[str] = Body(None)):
+                                 megjegyzes_diak: Optional[str] = Body(None),
+                                 reszletes_idopontok: Optional[list] = Body(None)):
     """
     Teacher creates igazolások for multiple students (e.g., entire class at event).
     
@@ -5213,6 +5221,7 @@ def teacher_bulk_create_igazolas(request, student_ids: List[int] = Body(...), el
                 diak=False,
                 ftv=False,
                 korrigalt=False,
+                reszletes_idopontok=reszletes_idopontok,
                 allapot='Elfogadva'
             )
             

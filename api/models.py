@@ -228,6 +228,12 @@ class Igazolas(models.Model):
 
     # BKK Verification - JSON field for BKK related data
     bkk_verification = models.JSONField(null=True, blank=True)
+
+    # Detailed intervals: list of {eleje, vege} pairs for non-contiguous absences.
+    # Null means the student was absent for the full eleje–vege span.
+    # Example: [{"eleje": "2024-01-15T08:00:00Z", "vege": "2024-01-15T09:00:00Z"}, ...]
+    reszletes_idopontok = models.JSONField(null=True, blank=True, verbose_name='Részletes időpontok',
+                                           help_text='Nem összefüggő hiányzás esetén az egyes részintervallumok listája')
     
     # Sub-form data for competition types, etc.
     sub_form_data = models.JSONField(null=True, blank=True, verbose_name='Alkérdőív adatok',
