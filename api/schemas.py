@@ -127,6 +127,7 @@ class IgazolasSchema(Schema):
     image_url: Optional[str] = None
     bkk_verification: Optional[dict] = None
     sub_form_data: Optional[dict] = None  # New field for sub-form data
+    reszletes_idopontok: Optional[list] = None  # Detailed intervals for non-contiguous absences
     allapot: str
     megjegyzes_tanar: Optional[str] = None
     kretaban_rogzitettem: bool
@@ -147,6 +148,7 @@ class IgazolasCreateRequest(Schema):
     imgDriveURL: Optional[str] = None
     bkk_verification: Optional[dict] = None
     sub_form_data: Optional[dict] = None  # New field for sub-form data
+    reszletes_idopontok: Optional[list] = None  # Detailed intervals for non-contiguous absences
 
 
 # Quick action schemas
@@ -192,6 +194,7 @@ class IgazolasSimpleSchema(Schema):
     rogzites_datuma: DateType
     megjegyzes_diak: Optional[str] = None
     bkk_verification: Optional[dict] = None
+    reszletes_idopontok: Optional[list] = None  # Detailed intervals for non-contiguous absences
 
 
 class DiakjaSignleSchema(Schema):
@@ -717,6 +720,7 @@ class GroupIgazolasCreateRequest(Schema):
     imgDriveURL: Optional[str] = None
     bkk_verification: Optional[dict] = None
     sub_form_data: Optional[dict] = None  # New field for sub-form data
+    reszletes_idopontok: Optional[list] = None  # Detailed intervals for non-contiguous absences
     additional_student_ids: List[int]  # List of student IDs to include in group
 
 
@@ -838,6 +842,7 @@ class TeacherCreateIgazolasRequest(Schema):
     vege: datetime
     tipus: int
     megjegyzes_diak: Optional[str] = None
+    reszletes_idopontok: Optional[list] = None  # Detailed intervals for non-contiguous absences
 
 
 class TeacherBulkCreateIgazolasRequest(Schema):
@@ -846,6 +851,7 @@ class TeacherBulkCreateIgazolasRequest(Schema):
     vege: datetime
     tipus: int
     megjegyzes_diak: Optional[str] = None
+    reszletes_idopontok: Optional[list] = None  # Detailed intervals for non-contiguous absences
 
 
 class EligibleStudentForTeacher(Schema):
