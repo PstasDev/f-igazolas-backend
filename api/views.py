@@ -5866,7 +5866,7 @@ def assign_classes_to_teacher(request, teacher_id: int, payload: dict):
 
 
 @api.get("/admin/teachers/{teacher_id}/classes", response={200: dict, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Teachers"])
-def get_teacher_classes(request, teacher_id: int):
+def get_teacher_classes_admin(request, teacher_id: int):
     """
     Get all classes assigned to a teacher.
     """
