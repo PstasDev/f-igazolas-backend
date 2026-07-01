@@ -200,13 +200,42 @@ def bkk_vehicle_positions(request):
 
 # Helper functions
 def is_class_teacher(user: User) -> bool:
-    """Check if user is a class teacher (osztályfőnök)"""
-    return Osztaly.objects.filter(osztalyfonokok=user).exists()
+    """Check if user is a class teacher (osztályfőnök) of at least one active class"""
+    return Osztaly.objects.filter(osztalyfonokok=user, archived=False).exists()
 
 
 def get_teacher_class(user: User) -> Osztaly:
-    """Get the class for which the user is a teacher"""
-    return Osztaly.objects.filter(osztalyfonokok=user).first()
+    """
+    Get the first active class for which the user is a teacher.
+
+    Kept for backward compatibility. New code should prefer
+    :func:`get_teacher_classes` which supports osztályfőnök assigned to
+    multiple classes.
+    """
+    return Osztaly.objects.filter(osztalyfonokok=user, archived=False).first()
+
+
+def get_teacher_classes(user: User):
+    """Return all currently active classes where the user is osztályfőnök."""
+    return Osztaly.objects.filter(osztalyfonokok=user, archived=False)
+
+
+def _serialize_osztaly_simple(osztaly: Osztaly) -> dict:
+    """Serialize an Osztaly to the simple/nev dict used by profile schemas."""
+    return {
+        'id': osztaly.id,
+        'tagozat': osztaly.tagozat,
+        'kezdes_eve': osztaly.kezdes_eve,
+        'nev': str(osztaly),
+    }
+
+
+def _serialize_osztalyaim(user: User) -> list:
+    """
+    Return a serialized list of all active classes where *user* is an
+    osztályfőnök. Empty list for non-teachers.
+    """
+    return [_serialize_osztaly_simple(o) for o in get_teacher_classes(user)]
 
 
 # Authentication Endpoints
@@ -280,7 +309,8 @@ def list_profiles(request):
                 'tagozat': osztaly.tagozat,
                 'kezdes_eve': osztaly.kezdes_eve,
                 'nev': str(osztaly)
-            } if osztaly else None
+            } if osztaly else None,
+            'osztalyaim': _serialize_osztalyaim(profile.user)
         }
         result.append(profile_data)
     
@@ -321,6 +351,7 @@ def get_my_profile(request):
                 'kezdes_eve': osztaly.kezdes_eve,
                 'nev': str(osztaly)
             } if osztaly else None,
+            'osztalyaim': _serialize_osztalyaim(profile.user),
             'ftv_registered': ftv_registered
     }
     except Profile.DoesNotExist:
@@ -376,7 +407,8 @@ def get_profile(request, profile_id: int):
             'tagozat': osztaly.tagozat,
             'kezdes_eve': osztaly.kezdes_eve,
             'nev': str(osztaly)
-        } if osztaly else None
+        } if osztaly else None,
+        'osztalyaim': _serialize_osztalyaim(profile.user)
     }
 
 
@@ -931,11 +963,16 @@ def get_igazolas_tipus(request, tipus_id: int):
 @api.put("/osztaly/igazolas-tipus/toggle", response={200: ToggleIgazolasTipusResponse, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["IgazolasTipus"])
 def toggle_igazolas_tipus_for_osztaly(request, data: ToggleIgazolasTipusRequest):
     """
-    Enable or disable a specific igazolas tipus for the teacher's own class.
-    
+    Enable or disable a specific igazolas tipus for the teacher's own class(es).
+
     Requires authentication. Only class teachers (ofő) can access this endpoint.
     When enabled=True, the tipus is accepted (removed from nem_fogadott_igazolas_tipusok).
     When enabled=False, the tipus is not accepted (added to nem_fogadott_igazolas_tipusok).
+
+    Multi-class support: if ``osztaly_id`` is provided, the toggle is applied
+    only to that class (and the requester must be its osztályfőnök). If it is
+    omitted, the toggle is applied to every currently active class where the
+    requester is osztályfőnök.
     """
     # Check if user is a class teacher
     if not is_class_teacher(request.auth):
@@ -943,15 +980,25 @@ def toggle_igazolas_tipus_for_osztaly(request, data: ToggleIgazolasTipusRequest)
             'error': 'Forbidden',
             'detail': 'Only class teachers (ofő) can modify igazolas tipus settings'
         }
-    
-    # Get the teacher's class
-    teacher_class = get_teacher_class(request.auth)
-    if not teacher_class:
+
+    # Resolve target classes
+    teacher_classes_qs = get_teacher_classes(request.auth)
+    if data.osztaly_id is not None:
+        target_classes = list(teacher_classes_qs.filter(id=data.osztaly_id))
+        if not target_classes:
+            return 403, {
+                'error': 'Forbidden',
+                'detail': f'You are not osztályfőnök of an active class with id {data.osztaly_id}'
+            }
+    else:
+        target_classes = list(teacher_classes_qs)
+
+    if not target_classes:
         return 403, {
             'error': 'Forbidden',
-            'detail': 'No class found for this teacher'
+            'detail': 'No active class found for this teacher'
         }
-    
+
     # Verify tipus exists
     try:
         tipus = IgazolasTipus.objects.get(id=data.tipus_id)
@@ -960,24 +1007,32 @@ def toggle_igazolas_tipus_for_osztaly(request, data: ToggleIgazolasTipusRequest)
             'error': 'Not found',
             'detail': f'IgazolasTipus with id {data.tipus_id} does not exist'
         }
-    
-    # Toggle the tipus
+
+    updated_ids = []
+    for teacher_class in target_classes:
+        if data.enabled:
+            teacher_class.nem_fogadott_igazolas_tipusok.remove(tipus)
+        else:
+            teacher_class.nem_fogadott_igazolas_tipusok.add(tipus)
+        updated_ids.append(teacher_class.id)
+
+    class_names = ', '.join(str(c) for c in target_classes)
     if data.enabled:
-        # Enable: remove from nem_fogadott_igazolas_tipusok
-        teacher_class.nem_fogadott_igazolas_tipusok.remove(tipus)
-        message = f'Igazolas tipus "{tipus.nev}" is now accepted for class {teacher_class}'
+        message = f'Igazolas tipus "{tipus.nev}" is now accepted for class(es) {class_names}'
     else:
-        # Disable: add to nem_fogadott_igazolas_tipusok
-        teacher_class.nem_fogadott_igazolas_tipusok.add(tipus)
-        message = f'Igazolas tipus "{tipus.nev}" is now NOT accepted for class {teacher_class}'
-    
-    logger.info(f"Teacher {request.auth.username} toggled tipus {tipus.nev} (ID: {tipus.id}) to {'enabled' if data.enabled else 'disabled'} for class {teacher_class}")
-    
+        message = f'Igazolas tipus "{tipus.nev}" is now NOT accepted for class(es) {class_names}'
+
+    logger.info(
+        f"Teacher {request.auth.username} toggled tipus {tipus.nev} (ID: {tipus.id}) "
+        f"to {'enabled' if data.enabled else 'disabled'} for class(es) {class_names}"
+    )
+
     return 200, {
         'message': message,
         'success': True,
         'tipus_id': tipus.id,
-        'enabled': data.enabled
+        'enabled': data.enabled,
+        'osztaly_ids': updated_ids,
     }
 
 
@@ -1020,51 +1075,59 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
         }
     
     print(f"   ✓ Profile found: ID={teacher_profile.id}")
-    teacher_class = teacher_profile.osztalyom()
-    if not teacher_class:
-        print(f"   ✗ ERROR: No class found for this teacher\n")
+    teacher_classes = list(get_teacher_classes(request.auth))
+    if not teacher_classes:
+        print(f"   ✗ ERROR: No active class found for this teacher\n")
         return 401, {
             'error': 'Unauthorized',
             'detail': 'No class found for this teacher'
         }
-    
-    print(f"   ✓ Teacher's class: {teacher_class} (ID: {teacher_class.id})\n")
-    
-    # Sync with FTV only if mode is 'live'
-    sync_result = None
+
+    print(f"   ✓ Teacher's active classes ({len(teacher_classes)}): "
+          f"{', '.join(f'{c} (ID: {c.id})' for c in teacher_classes)}\n")
+
+    # Sync with FTV only if mode is 'live' — sync every active class
+    sync_results = {}
     if mode == "live":
-        print(f"🔄 MODE=LIVE: Triggering FTV sync...")
-        try:
-            logger.info(f"User {request.auth.username} requested /igazolas - triggering class-specific FTV sync")
-            sync_result = sync_class_absences_from_ftv(teacher_class, debug_performance=debug_perf)
-            print(f"✅ FTV Sync completed successfully")
-            print(f"   Stats: {sync_result.get('statistics')}\n")
-            logger.info(f"FTV sync completed: {sync_result.get('statistics')}")
-            
-            # Print performance details in dev mode
-            if should_print_perf and sync_result.get('ftv_performance'):
-                print(f"📊 Performance Details: {sync_result['ftv_performance']}\n")
-                logger.info(f"FTV Performance Details: {sync_result['ftv_performance']}")
-        except FTVSyncError as e:
-            print(f"❌ FTV sync failed: {str(e)}")
-            print(f"   → Continuing with existing data\n")
-            logger.error(f"FTV sync failed but continuing with existing data: {str(e)}")
-        except Exception as e:
-            print(f"❌ Unexpected error during FTV sync: {str(e)}")
-            print(f"   → Continuing with existing data\n")
-            import traceback
-            traceback.print_exc()
-            logger.error(f"Unexpected error during FTV sync: {str(e)}")
+        print(f"🔄 MODE=LIVE: Triggering FTV sync for {len(teacher_classes)} class(es)...")
+        for teacher_class in teacher_classes:
+            try:
+                logger.info(
+                    f"User {request.auth.username} requested /igazolas - "
+                    f"triggering class-specific FTV sync for {teacher_class}"
+                )
+                sync_result = sync_class_absences_from_ftv(teacher_class, debug_performance=debug_perf)
+                sync_results[teacher_class.id] = sync_result
+                print(f"✅ FTV Sync completed for {teacher_class}")
+                print(f"   Stats: {sync_result.get('statistics')}\n")
+                logger.info(f"FTV sync completed for {teacher_class}: {sync_result.get('statistics')}")
+
+                if should_print_perf and sync_result.get('ftv_performance'):
+                    print(f"📊 Performance Details ({teacher_class}): {sync_result['ftv_performance']}\n")
+                    logger.info(f"FTV Performance Details ({teacher_class}): {sync_result['ftv_performance']}")
+            except FTVSyncError as e:
+                print(f"❌ FTV sync failed for {teacher_class}: {str(e)}")
+                print(f"   → Continuing with existing data\n")
+                logger.error(f"FTV sync failed for {teacher_class} but continuing with existing data: {str(e)}")
+            except Exception as e:
+                print(f"❌ Unexpected error during FTV sync for {teacher_class}: {str(e)}")
+                print(f"   → Continuing with existing data\n")
+                import traceback
+                traceback.print_exc()
+                logger.error(f"Unexpected error during FTV sync for {teacher_class}: {str(e)}")
     else:
         print(f"💾 MODE=CACHED: Skipping FTV sync\n")
         logger.info(f"User {request.auth.username} requested /igazolas in cached mode - skipping FTV sync")
-    
-    # Get cache metadata to include in response headers or logging
-    cache_metadata = get_cache_metadata(f'class_{teacher_class.id}')
+
+    # Get cache metadata for every class the teacher owns
+    cache_metadata = {
+        teacher_class.id: get_cache_metadata(f'class_{teacher_class.id}')
+        for teacher_class in teacher_classes
+    }
     print(f"💾 Cache metadata: {cache_metadata}\n")
     logger.info(f"Cache metadata: {cache_metadata}")
-    
-    # Fetch igazolások for the teacher's class
+
+    # Fetch igazolások for all of the teacher's active classes
     igazolasok = teacher_profile.osztalyom_igazolasai().select_related('profile', 'tipus').prefetch_related('mulasztasok')
     result = []
     
@@ -2015,26 +2078,41 @@ def get_ftv_sync_metadata(request, sync_type: str = "base"):
     Args:
         sync_type: Type of sync to check - 'base', 'user', or 'class' (default: 'base')
                    For 'user' type, returns metadata for the current user
-                   For 'class' type, returns metadata for the current user's class
+                   For 'class' type, returns metadata for **all** active classes
+                   where the current user is osztályfőnök. The response includes
+                   a ``per_class`` mapping (``{class_id: metadata}``) so
+                   osztályfőnök assigned to multiple classes can inspect each
+                   cache. ``metadata`` mirrors the first class's metadata for
+                   backward compatibility.
     """
     # Determine the actual sync_type based on the user
+    per_class = None
     if sync_type == 'user':
         actual_sync_type = f'user_{request.auth.id}'
     elif sync_type == 'class':
-        teacher_profile = Profile.objects.filter(user=request.auth).first()
-        if teacher_profile and teacher_profile.osztalyom():
-            actual_sync_type = f'class_{teacher_profile.osztalyom().id}'
+        teacher_classes = list(get_teacher_classes(request.auth))
+        if teacher_classes:
+            per_class = {
+                str(tc.id): get_cache_metadata(f'class_{tc.id}')
+                for tc in teacher_classes
+            }
+            # Preserve backward-compatible single-class metadata behaviour.
+            first_class = teacher_classes[0]
+            actual_sync_type = f'class_{first_class.id}'
         else:
             actual_sync_type = 'base'
     else:
         actual_sync_type = 'base'
-    
+
     metadata = get_cache_metadata(actual_sync_type)
-    return 200, {
+    response = {
         'success': True,
         'sync_type': sync_type,
-        'metadata': metadata
+        'metadata': metadata,
     }
+    if per_class is not None:
+        response['per_class'] = per_class
+    return 200, response
 
 
 @api.post("/sync/ftv", response={200: dict, 500: ErrorResponse}, auth=jwt_auth, tags=["FTV Sync"])

@@ -50,6 +50,7 @@ class ProfileSchema(Schema):
     id: int
     user: UserSchema
     osztalyom: Optional[OsztalySimpleSchema] = None
+    osztalyaim: Optional[List[OsztalySimpleSchema]] = None
     
     class Config:
         from_attributes = True
@@ -255,6 +256,7 @@ class ChangePasswordOTPResponse(Schema):
 class ToggleIgazolasTipusRequest(Schema):
     tipus_id: int
     enabled: bool  # True to enable (allow), False to disable (not accept)
+    osztaly_id: Optional[int] = None  # Optional: apply to a single class. If omitted, applies to ALL active classes where the requester is osztályfőnök.
 
 
 class ToggleIgazolasTipusResponse(Schema):
@@ -262,6 +264,7 @@ class ToggleIgazolasTipusResponse(Schema):
     success: bool
     tipus_id: int
     enabled: bool
+    osztaly_ids: Optional[List[int]] = None  # IDs of classes that were updated
 
 
 # System Message schemas
