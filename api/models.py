@@ -35,11 +35,15 @@ class Profile(models.Model):
         Return Igazolás records for all active classes where this user is an
         osztályfőnök. Combines students across every assigned class so a
         teacher of multiple classes sees all of their students' records.
+        Archived records are excluded.
         """
         osztalyok = self.osztalyaim()
         if not osztalyok.exists():
             return Igazolas.objects.none()
-        return Igazolas.objects.filter(profile__user__osztaly__in=osztalyok).distinct()
+        return Igazolas.objects.filter(
+            profile__user__osztaly__in=osztalyok,
+            archived=False
+        ).distinct()
 
     def __str__(self):
         return self.user.username
@@ -158,6 +162,10 @@ class Mulasztas(models.Model):
         indexes = [
             models.Index(fields=['uploaded_by_student', '-datum']),
         ]
+
+    # Feature #14: Academic Year Archival
+    archived = models.BooleanField(default=False, verbose_name="Archivált", help_text="A mulasztás archivált státuszban van")
+    academic_year = models.CharField(max_length=20, null=True, blank=True, verbose_name="Tanév")
 
 class IgazolasTipus(models.Model):
     nev = models.CharField(max_length=100) # Pl. orvosi igazolás

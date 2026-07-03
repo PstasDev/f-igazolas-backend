@@ -1170,7 +1170,7 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
     
     try:
         profile = Profile.objects.get(user=request.auth)
-        igazolasok = Igazolas.objects.filter(profile=profile).select_related('tipus').prefetch_related('mulasztasok')
+        igazolasok = Igazolas.objects.filter(profile=profile, archived=False).select_related('tipus').prefetch_related('mulasztasok')
         result = []
         
         for igazolas in igazolasok:
@@ -3161,7 +3161,7 @@ def analyze_mulasztas_coverage(user: User, include_igazolt: bool = False) -> dic
     from datetime import datetime, time, timedelta
     
     # Get all student-uploaded mulasztas records for the user
-    mulasztasok_query = Mulasztas.objects.filter(uploaded_by_student=user)
+    mulasztasok_query = Mulasztas.objects.filter(uploaded_by_student=user, archived=False)
     if not include_igazolt:
         mulasztasok_query = mulasztasok_query.filter(igazolt=False)
     
@@ -3202,7 +3202,8 @@ def analyze_mulasztas_coverage(user: User, include_igazolt: bool = False) -> dic
     # Get accepted AND pending igazolások (to show what could potentially cover the mulasztás)
     igazolasok = Igazolas.objects.filter(
         profile=profile,
-        allapot__in=['Elfogadva', 'Függőben']
+        allapot__in=['Elfogadva', 'Függőben'],
+        archived=False
     ).order_by('-eleje')
     
     # Analyze coverage
@@ -4608,7 +4609,8 @@ def archive_class(request, class_id: int, archive_teacher: bool = False):
     else:
         academic_year = f"{now.year - 1}/{now.year}"
 
-    archived_counts = {'students': 0, 'teachers': 0, 'igazolasok': 0}
+    archived_counts = {'students': 0, 'teachers': 0, 'igazolasok': 0, 'mulasztasok': 0}
+    student_user_ids: list = []
 
     with transaction.atomic():
         # Archive the class itself
@@ -4617,42 +4619,60 @@ def archive_class(request, class_id: int, archive_teacher: bool = False):
         osztaly.academic_year = academic_year
         osztaly.save()
 
-        # Archive each student's profile and their igazolások
-        for student in osztaly.tanulok.all():
-            try:
-                profile = Profile.objects.get(user=student)
-            except Profile.DoesNotExist:
-                continue
-            if not profile.archived:
-                profile.archived = True
-                profile.archive_date = now
-                profile.academic_year = academic_year
-                profile.save()
-                archived_counts['students'] += 1
-            archived_counts['igazolasok'] += Igazolas.objects.filter(
-                profile=profile, archived=False
+        # Collect student user IDs from the class M2M
+        student_user_ids = list(osztaly.tanulok.values_list('id', flat=True))
+
+        if student_user_ids:
+            # Bulk-archive student profiles that aren't already archived
+            student_profiles_qs = Profile.objects.filter(
+                user_id__in=student_user_ids,
+                archived=False
+            )
+            archived_counts['students'] = student_profiles_qs.update(
+                archived=True,
+                archive_date=now,
+                academic_year=academic_year
+            )
+
+            # All profile IDs for students (including already-archived ones so we
+            # don't miss igazolások/mulasztások that slipped through earlier)
+            all_student_profile_ids = list(
+                Profile.objects.filter(user_id__in=student_user_ids).values_list('id', flat=True)
+            )
+
+            # Bulk-archive all igazolások belonging to students in this class
+            archived_counts['igazolasok'] = Igazolas.objects.filter(
+                profile_id__in=all_student_profile_ids,
+                archived=False
+            ).update(archived=True, academic_year=academic_year)
+
+            # Bulk-archive all mulasztások belonging to students in this class
+            archived_counts['mulasztasok'] = Mulasztas.objects.filter(
+                uploaded_by_student_id__in=student_user_ids,
+                archived=False
             ).update(archived=True, academic_year=academic_year)
 
         # Optionally archive the class teacher(s)
         if archive_teacher:
-            for teacher in osztaly.osztalyfonokok.all():
-                try:
-                    profile = Profile.objects.get(user=teacher)
-                except Profile.DoesNotExist:
-                    continue
-                if not profile.archived:
-                    profile.archived = True
-                    profile.archive_date = now
-                    profile.academic_year = academic_year
-                    profile.save()
-                    archived_counts['teachers'] += 1
+            teacher_user_ids = list(osztaly.osztalyfonokok.values_list('id', flat=True))
+            if teacher_user_ids:
+                archived_counts['teachers'] = Profile.objects.filter(
+                    user_id__in=teacher_user_ids,
+                    archived=False
+                ).update(
+                    archived=True,
+                    archive_date=now,
+                    academic_year=academic_year
+                )
 
     logger.info(
-        f"User {request.auth.username} archived class {osztaly} ({academic_year}): {archived_counts}"
+        f"User {request.auth.username} archived class {osztaly} ({academic_year}): "
+        f"{archived_counts}, total students in class: {len(student_user_ids)}"
     )
     return 200, {
         'archived_count': archived_counts,
         'academic_year': academic_year,
+        'class_student_count': len(student_user_ids),
         'message': f"Az osztály sikeresen archiválva ({academic_year})"
     }
 
