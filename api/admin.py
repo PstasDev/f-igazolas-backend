@@ -181,7 +181,7 @@ class IgazolasTipusAdmin(admin.ModelAdmin):
 # Igazolas Admin
 @admin.register(Igazolas)
 class IgazolasAdmin(admin.ModelAdmin):
-    list_display = ['id', 'get_student', 'get_osztaly', 'eleje', 'vege', 'tipus', 'allapot', 'get_megjegyzes_diak', 'diak', 'ftv', 'korrigalt', 'is_group_leader', 'archived', 'rogzites_datuma']
+    list_display = ['id', 'get_student', 'get_osztaly', 'eleje', 'vege', 'reszletes_idopontok','tipus', 'allapot', 'get_megjegyzes_diak', 'diak', 'ftv', 'korrigalt', 'is_group_leader', 'archived', 'rogzites_datuma']
     list_filter = ['allapot', 'diak', 'ftv', 'korrigalt', 'kretaban_rogzitettem', 'tipus', 'is_group_leader', 'archived', 'rogzites_datuma']
     search_fields = ['profile__user__username', 'profile__user__first_name', 'profile__user__last_name', 'megjegyzes_diak', 'megjegyzes_tanar', 'group_id']
     date_hierarchy = 'rogzites_datuma'
@@ -193,7 +193,7 @@ class IgazolasAdmin(admin.ModelAdmin):
     
     fieldsets = (
         ('Alapadatok', {
-            'fields': ('profile', 'eleje', 'vege', 'tipus')
+            'fields': ('profile', 'eleje', 'vege', 'reszletes_idopontok', 'tipus')
         }),
         ('Mulasztások', {
             'fields': ('mulasztasok',)
