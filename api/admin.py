@@ -2,10 +2,37 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
 from django.utils.html import format_html
+from django.utils import timezone
 from .models import (
     Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas, 
     SystemMessage, TanitasiSzunet, Override, APIMetrics
 )
+
+
+# ---------------------------------------------------------------------------
+# Shared bulk action helpers
+# ---------------------------------------------------------------------------
+
+@admin.action(description='✅ Kijelöltek archiválása (archived = True)')
+def mark_archived(modeladmin, request, queryset):
+    now = timezone.now()
+    # Try to set archive_date if the model has it, otherwise skip
+    has_archive_date = any(f.name == 'archive_date' for f in queryset.model._meta.get_fields())
+    if has_archive_date:
+        updated = queryset.filter(archived=False).update(archived=True, archive_date=now)
+    else:
+        updated = queryset.filter(archived=False).update(archived=True)
+    modeladmin.message_user(request, f'{updated} rekord archiválva.')
+
+
+@admin.action(description='↩️ Kijelöltek visszaállítása (archived = False)')
+def mark_unarchived(modeladmin, request, queryset):
+    has_archive_date = any(f.name == 'archive_date' for f in queryset.model._meta.get_fields())
+    if has_archive_date:
+        updated = queryset.filter(archived=True).update(archived=False, archive_date=None)
+    else:
+        updated = queryset.filter(archived=True).update(archived=False)
+    modeladmin.message_user(request, f'{updated} rekord visszaállítva.')
 
 
 # Custom filter for last_login that excludes nulls
@@ -56,6 +83,7 @@ class ProfileAdmin(admin.ModelAdmin):
     search_fields = ['user__username', 'user__first_name', 'user__last_name']
     list_filter = ['is_studios', 'archived']
     raw_id_fields = ['user']
+    actions = [mark_archived, mark_unarchived]
     
     fieldsets = (
         ('Alapadatok', {
@@ -87,6 +115,7 @@ class OsztalyAdmin(admin.ModelAdmin):
     list_filter = ['tagozat', 'kezdes_eve', 'archived']
     search_fields = ['tagozat']
     filter_horizontal = ['tanulok', 'osztalyfonokok', 'nem_fogadott_igazolas_tipusok']
+    actions = [mark_archived, mark_unarchived]
     
     fieldsets = (
         ('Alapadatok', {
@@ -120,11 +149,12 @@ class OsztalyAdmin(admin.ModelAdmin):
 # Mulasztas Admin
 @admin.register(Mulasztas)
 class MulasztasAdmin(admin.ModelAdmin):
-    list_display = ['id', 'datum', 'ora', 'tantargy', 'tipus', 'igazolt', 'igazolas_tipusa', 'rogzites_datuma']
-    list_filter = ['tipus', 'igazolt', 'datum', 'rogzites_datuma', 'tantargy']
+    list_display = ['id', 'datum', 'ora', 'tantargy', 'tipus', 'igazolt', 'igazolas_tipusa', 'archived', 'academic_year', 'rogzites_datuma']
+    list_filter = ['tipus', 'igazolt', 'archived', 'datum', 'rogzites_datuma', 'tantargy']
     search_fields = ['tantargy', 'tema', 'igazolas_tipusa']
     date_hierarchy = 'datum'
     ordering = ['-datum', 'ora']
+    actions = [mark_archived, mark_unarchived]
 
 
 # IgazolasTipus Admin
@@ -159,6 +189,7 @@ class IgazolasAdmin(admin.ModelAdmin):
     filter_horizontal = ['mulasztasok']
     readonly_fields = ['rogzites_datuma', 'group_id', 'image_preview']
     ordering = ['-rogzites_datuma']
+    actions = [mark_archived, mark_unarchived]
     
     fieldsets = (
         ('Alapadatok', {

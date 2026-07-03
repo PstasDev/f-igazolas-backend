@@ -360,8 +360,8 @@ def get_profile(request, profile_id: int):
 
 @api.get("/osztaly", response={200: List[OsztalySchema], 401: ErrorResponse}, auth=jwt_auth, tags=["Osztaly"])
 def list_osztaly(request):
-    """Get all classes (requires authentication)"""
-    osztalyok = Osztaly.objects.all().prefetch_related('nem_fogadott_igazolas_tipusok')
+    """Get all non-archived classes (requires authentication)"""
+    osztalyok = Osztaly.objects.filter(archived=False).prefetch_related('nem_fogadott_igazolas_tipusok')
     result = []
     
     for osztaly in osztalyok:
