@@ -1316,7 +1316,8 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         diak_extra_ido_utana=None,
         imgDriveURL=data.imgDriveURL,
         bkk_verification=data.bkk_verification,
-        sub_form_data=data.sub_form_data  # New field
+        sub_form_data=data.sub_form_data,  # New field
+        reszletes_idopontok=data.reszletes_idopontok
     )
     
     osztaly = igazolas.profile.osztalyom()
