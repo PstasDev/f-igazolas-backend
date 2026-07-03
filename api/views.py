@@ -1078,6 +1078,7 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
             'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
             'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
             'imgDriveURL': igazolas.imgDriveURL,
+            'image_url': igazolas.image.url if igazolas.image else None,
             'bkk_verification': igazolas.bkk_verification,
             'reszletes_idopontok': igazolas.reszletes_idopontok,
             'allapot': igazolas.allapot,
@@ -1208,6 +1209,7 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
                 'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
                 'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
                 'imgDriveURL': igazolas.imgDriveURL,
+                'image_url': igazolas.image.url if igazolas.image else None,
                 'bkk_verification': igazolas.bkk_verification,
                 'reszletes_idopontok': igazolas.reszletes_idopontok,
                 'allapot': igazolas.allapot,
@@ -1270,6 +1272,7 @@ def get_igazolas(request, igazolas_id: int):
         'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
         'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
         'imgDriveURL': igazolas.imgDriveURL,
+        'image_url': igazolas.image.url if igazolas.image else None,
         'bkk_verification': igazolas.bkk_verification,
         'reszletes_idopontok': igazolas.reszletes_idopontok,
         'allapot': igazolas.allapot,
@@ -1537,6 +1540,45 @@ def update_teacher_comment(request, igazolas_id: int, data: TeacherCommentUpdate
 
 
 # Image Upload Endpoint
+
+@api.get("/igazolas/{igazolas_id}/image", auth=jwt_auth, tags=["Igazolas"])
+def get_igazolas_image(request, igazolas_id: int):
+    """
+    Serve the server-stored image for an igazolás (requires authentication).
+
+    Accessible by the owning student, any teacher of the student's class, or a superuser.
+    Returns the raw image bytes with the appropriate Content-Type header.
+    """
+    import os
+    import mimetypes
+
+    try:
+        igazolas = Igazolas.objects.get(id=igazolas_id)
+    except Igazolas.DoesNotExist:
+        return HttpResponse(status=404)
+
+    if not igazolas.image:
+        return HttpResponse(status=404)
+
+    # Authorization check
+    profile = getattr(request.auth, 'profile', None)
+    is_owner = profile is not None and igazolas.profile == profile
+    if not is_owner and not request.auth.is_superuser:
+        student_class = igazolas.profile.osztalyom()
+        is_teacher = student_class and request.auth in student_class.osztalyfonokok.all()
+        if not is_teacher:
+            return HttpResponse(status=403)
+
+    file_path = igazolas.image.path
+    if not os.path.isfile(file_path):
+        return HttpResponse(status=404)
+
+    content_type, _ = mimetypes.guess_type(file_path)
+    content_type = content_type or 'application/octet-stream'
+
+    with open(file_path, 'rb') as f:
+        return HttpResponse(f.read(), content_type=content_type)
+
 
 @api.post("/igazolas/{igazolas_id}/image", response={200: dict, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
 def upload_igazolas_image(request, igazolas_id: int):
@@ -4896,15 +4938,20 @@ def get_archived_years(request):
     # Build response
     years_data = []
     for year in sorted(archived_years, reverse=True):
-        class_count = Osztaly.objects.filter(academic_year=year, archived=True).count()
-        student_count = Profile.objects.filter(academic_year=year, archived=True).count()
-        igazolasok_count = Igazolas.objects.filter(academic_year=year, archived=True).count()
-        
+        total_classes = Osztaly.objects.filter(academic_year=year, archived=True).count()
+        total_users = Profile.objects.filter(academic_year=year, archived=True).count()
+        total_igazolasok = Igazolas.objects.filter(academic_year=year, archived=True).count()
+
+        # Use the latest archive_date from classes for this year as a representative date
+        latest_class = Osztaly.objects.filter(academic_year=year, archived=True).order_by('-archive_date').first()
+        archive_date = latest_class.archive_date if latest_class and latest_class.archive_date else None
+
         years_data.append({
-            'year': year,
-            'class_count': class_count,
-            'student_count': student_count,
-            'igazolasok_count': igazolasok_count
+            'academic_year': year,
+            'archive_date': archive_date,
+            'total_classes': total_classes,
+            'total_users': total_users,
+            'total_igazolasok': total_igazolasok,
         })
     
     return 200, years_data
