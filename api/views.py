@@ -52,7 +52,8 @@ from .schemas import (
     AttendanceCreateRequest, AttendanceUpdateRequest, AttendanceResponse, StudentAttendanceResponse,
     PermissionMatrixResponse, UpdatePermissionRequest, UpdatePermissionResponse,
     BulkUpdatePermissionsRequest, BulkUpdatePermissionsResponse,
-    AssignClassesRequest, TeacherClassesResponse
+    AssignClassesRequest, TeacherClassesResponse,
+    IgazolasUndoResponse
 )
 from .jwt_utils import generate_jwt_token, decode_jwt_token
 from .authentication import JWTAuth
@@ -1078,6 +1079,7 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
             'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
             'imgDriveURL': igazolas.imgDriveURL,
             'bkk_verification': igazolas.bkk_verification,
+            'reszletes_idopontok': igazolas.reszletes_idopontok,
             'allapot': igazolas.allapot,
             'megjegyzes_tanar': igazolas.megjegyzes_tanar,
             'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
@@ -1207,6 +1209,7 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
                 'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
                 'imgDriveURL': igazolas.imgDriveURL,
                 'bkk_verification': igazolas.bkk_verification,
+                'reszletes_idopontok': igazolas.reszletes_idopontok,
                 'allapot': igazolas.allapot,
                 'megjegyzes_tanar': igazolas.megjegyzes_tanar,
                 'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
@@ -1268,6 +1271,7 @@ def get_igazolas(request, igazolas_id: int):
         'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
         'imgDriveURL': igazolas.imgDriveURL,
         'bkk_verification': igazolas.bkk_verification,
+        'reszletes_idopontok': igazolas.reszletes_idopontok,
         'allapot': igazolas.allapot,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
         'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
@@ -1354,6 +1358,7 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
         'imgDriveURL': igazolas.imgDriveURL,
         'bkk_verification': igazolas.bkk_verification,
+        'reszletes_idopontok': igazolas.reszletes_idopontok,
         'allapot': igazolas.allapot,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
         'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
@@ -1449,6 +1454,51 @@ def bulk_quick_action_igazolas(request, data: BulkQuickActionRequest):
     }
 
 
+@api.post("/igazolas/{igazolas_id}/undo", response={200: IgazolasUndoResponse, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
+def undo_igazolas(request, igazolas_id: int):
+    """
+    Withdraw (undo) an igazolás. Only the student who owns it can undo it,
+    and only when it is in Függőben or Elutasítva state.
+    """
+    try:
+        igazolas = Igazolas.objects.get(id=igazolas_id)
+    except Igazolas.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'Igazolas with id {igazolas_id} does not exist'
+        }
+
+    # Only the owner (student) can undo their own igazolas
+    profile = getattr(request.auth, 'profile', None)
+    if profile is None or igazolas.profile.user != request.auth:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'You can only undo your own igazolás'
+        }
+
+    # Cannot undo an already accepted igazolas
+    if igazolas.allapot == 'Elfogadva':
+        return 400, {
+            'error': 'Invalid state',
+            'detail': 'Cannot undo an already accepted igazolás'
+        }
+
+    if igazolas.undoed:
+        return 400, {
+            'error': 'Already undone',
+            'detail': 'This igazolás has already been withdrawn'
+        }
+
+    igazolas.undoed = True
+    igazolas.save()
+
+    return 200, {
+        'id': igazolas.id,
+        'undoed': igazolas.undoed,
+        'message': 'Igazolás successfully withdrawn'
+    }
+
+
 # Teacher Comment Edit Endpoint
 
 @api.put("/igazolas/{igazolas_id}/teacher-comment", response={200: TeacherCommentUpdateResponse, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
@@ -1483,6 +1533,74 @@ def update_teacher_comment(request, igazolas_id: int, data: TeacherCommentUpdate
         'id': igazolas.id,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
         'message': 'Teacher comment updated successfully'
+    }
+
+
+# Image Upload Endpoint
+
+@api.post("/igazolas/{igazolas_id}/image", response={200: dict, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
+def upload_igazolas_image(request, igazolas_id: int):
+    """
+    Upload or replace the image attached to an igazolás.
+
+    Only the owner of the igazolás (the student who created it) may upload an image.
+    Accepted file types: JPEG, PNG, WEBP, GIF.
+    The image is stored server-side (MEDIA_ROOT/igazolas_images/) and the URL is returned.
+    """
+    try:
+        igazolas = Igazolas.objects.get(id=igazolas_id)
+    except Igazolas.DoesNotExist:
+        return 404, {'error': 'Not found', 'detail': f'Igazolas with id {igazolas_id} does not exist'}
+
+    # Only the student who owns the igazolás may attach an image
+    profile = getattr(request.auth, 'profile', None)
+    if profile is None or igazolas.profile != profile:
+        return 403, {'error': 'Forbidden', 'detail': 'You can only upload images for your own igazolások'}
+
+    if 'image' not in request.FILES:
+        return 400, {'error': 'No file uploaded', 'detail': 'Az image mező hiányzik a kérésből.'}
+
+    uploaded_file = request.FILES['image']
+
+    # Validate MIME type / extension
+    ALLOWED_CONTENT_TYPES = {'image/jpeg', 'image/png', 'image/webp', 'image/gif'}
+    ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+    content_type = uploaded_file.content_type.lower() if uploaded_file.content_type else ''
+    file_ext = Path(uploaded_file.name).suffix.lower() if uploaded_file.name else ''
+
+    if content_type not in ALLOWED_CONTENT_TYPES or file_ext not in ALLOWED_EXTENSIONS:
+        return 400, {
+            'error': 'Invalid file type',
+            'detail': 'Csak JPEG, PNG, WEBP vagy GIF képek tölthetők fel.'
+        }
+
+    # 10 MB size limit
+    MAX_SIZE = 10 * 1024 * 1024
+    if uploaded_file.size > MAX_SIZE:
+        return 400, {
+            'error': 'File too large',
+            'detail': 'A fájl mérete legfeljebb 10 MB lehet.'
+        }
+
+    # Delete old image file if present
+    if igazolas.image:
+        old_path = igazolas.image.path
+        try:
+            import os
+            if os.path.isfile(old_path):
+                os.remove(old_path)
+        except Exception:
+            pass
+
+    igazolas.image = uploaded_file
+    igazolas.save(update_fields=['image'])
+
+    image_url = request.build_absolute_uri(igazolas.image.url) if igazolas.image else None
+
+    return 200, {
+        'id': igazolas.id,
+        'image_url': image_url,
+        'message': 'Kép sikeresen feltöltve.'
     }
 
 
@@ -1750,7 +1868,8 @@ def get_diakjaim(request):
                 'allapot': igazolas.allapot,
                 'rogzites_datuma': igazolas.rogzites_datuma,
                 'megjegyzes_diak': igazolas.megjegyzes_diak,
-                'bkk_verification': igazolas.bkk_verification
+                'bkk_verification': igazolas.bkk_verification,
+                'reszletes_idopontok': igazolas.reszletes_idopontok
             })
         
         student_data = {
