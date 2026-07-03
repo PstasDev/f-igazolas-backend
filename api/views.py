@@ -4550,6 +4550,113 @@ def analyze_class_period_usage(request, class_id: int):
 
 # Feature #14: Academic Year Archival
 
+
+@api.get("/admin/classes/archivable", response={200: List[dict], 403: ErrorResponse}, auth=jwt_auth, tags=["Admin - Academic Year"])
+def get_archivable_classes(request):
+    """
+    Get all non-archived classes for the archival dropdown.
+    Requires superuser permission.
+    """
+    if not request.auth.is_superuser:
+        return 403, {'error': 'Forbidden', 'detail': 'Only superusers can view archivable classes'}
+
+    classes = Osztaly.objects.filter(archived=False).prefetch_related('osztalyfonokok')
+    result = []
+    for osztaly in classes:
+        result.append({
+            'id': osztaly.id,
+            'nev': str(osztaly),
+            'tagozat': osztaly.tagozat,
+            'kezdes_eve': osztaly.kezdes_eve,
+            'osztalyfonokok': [
+                {
+                    'id': of.id,
+                    'username': of.username,
+                    'first_name': of.first_name,
+                    'last_name': of.last_name,
+                }
+                for of in osztaly.osztalyfonokok.all()
+            ]
+        })
+    return 200, result
+
+
+@api.post("/admin/classes/{class_id}/archive", response={200: dict, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Academic Year"])
+def archive_class(request, class_id: int, archive_teacher: bool = False):
+    """
+    Archive a single class and its students' profiles and igazolások.
+    Users remain active (can still log in); only their Profile is marked archived
+    so their data is excluded from statistics and views.
+    Optionally archives the osztályfőnök(ök) as well.
+    Requires superuser permission.
+    """
+    if not request.auth.is_superuser:
+        return 403, {'error': 'Forbidden', 'detail': 'Only superusers can archive classes'}
+
+    try:
+        osztaly = Osztaly.objects.prefetch_related('tanulok', 'osztalyfonokok').get(id=class_id)
+    except Osztaly.DoesNotExist:
+        return 404, {'error': 'Not found', 'detail': 'Class not found'}
+
+    if osztaly.archived:
+        return 400, {'error': 'Bad request', 'detail': 'This class is already archived'}
+
+    # Compute current academic year
+    now = timezone.now()
+    if now.month >= 9:
+        academic_year = f"{now.year}/{now.year + 1}"
+    else:
+        academic_year = f"{now.year - 1}/{now.year}"
+
+    archived_counts = {'students': 0, 'teachers': 0, 'igazolasok': 0}
+
+    with transaction.atomic():
+        # Archive the class itself
+        osztaly.archived = True
+        osztaly.archive_date = now
+        osztaly.academic_year = academic_year
+        osztaly.save()
+
+        # Archive each student's profile and their igazolások
+        for student in osztaly.tanulok.all():
+            try:
+                profile = Profile.objects.get(user=student)
+            except Profile.DoesNotExist:
+                continue
+            if not profile.archived:
+                profile.archived = True
+                profile.archive_date = now
+                profile.academic_year = academic_year
+                profile.save()
+                archived_counts['students'] += 1
+            archived_counts['igazolasok'] += Igazolas.objects.filter(
+                profile=profile, archived=False
+            ).update(archived=True, academic_year=academic_year)
+
+        # Optionally archive the class teacher(s)
+        if archive_teacher:
+            for teacher in osztaly.osztalyfonokok.all():
+                try:
+                    profile = Profile.objects.get(user=teacher)
+                except Profile.DoesNotExist:
+                    continue
+                if not profile.archived:
+                    profile.archived = True
+                    profile.archive_date = now
+                    profile.academic_year = academic_year
+                    profile.save()
+                    archived_counts['teachers'] += 1
+
+    logger.info(
+        f"User {request.auth.username} archived class {osztaly} ({academic_year}): {archived_counts}"
+    )
+    return 200, {
+        'archived_count': archived_counts,
+        'academic_year': academic_year,
+        'message': f"Az osztály sikeresen archiválva ({academic_year})"
+    }
+
+
 @api.post("/admin/academic-year/archive", response={200: dict, 400: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Admin - Academic Year"])
 def archive_academic_year(request, year_start: int, archive_classes: bool = True, archive_igazolasok: bool = True):
     """
