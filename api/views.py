@@ -4585,14 +4585,15 @@ def get_archivable_classes(request):
 @api.post("/admin/classes/{class_id}/archive", response={200: dict, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Academic Year"])
 def archive_class(request, class_id: int, archive_teacher: bool = False):
     """
-    Archive a single class and its students' profiles and igazolások.
-    Users remain active (can still log in); only their Profile is marked archived
-    so their data is excluded from statistics and views.
-    Optionally archives the osztályfőnök(ök) as well.
+    Close the current academic year:
+    1. Archive ALL unarchived igazolások and mulasztások system-wide (tanév lezárása).
+    2. Archive the selected outgoing class and its students' profiles.
+    3. Optionally archive the class teacher(s).
+    Users remain active (can still log in).
     Requires superuser permission.
     """
     if not request.auth.is_superuser:
-        return 403, {'error': 'Forbidden', 'detail': 'Only superusers can archive classes'}
+        return 403, {'error': 'Forbidden', 'detail': 'Only superusers can archive academic years'}
 
     try:
         osztaly = Osztaly.objects.prefetch_related('tanulok', 'osztalyfonokok').get(id=class_id)
@@ -4613,46 +4614,40 @@ def archive_class(request, class_id: int, archive_teacher: bool = False):
     student_user_ids: list = []
 
     with transaction.atomic():
-        # Archive the class itself
+        # ----------------------------------------------------------------
+        # 1. Archive ALL unarchived igazolások and mulasztások system-wide
+        # ----------------------------------------------------------------
+        archived_counts['igazolasok'] = Igazolas.objects.filter(
+            archived=False
+        ).update(archived=True, academic_year=academic_year)
+
+        archived_counts['mulasztasok'] = Mulasztas.objects.filter(
+            archived=False
+        ).update(archived=True, academic_year=academic_year)
+
+        # ----------------------------------------------------------------
+        # 2. Archive the outgoing class and its students' profiles
+        # ----------------------------------------------------------------
         osztaly.archived = True
         osztaly.archive_date = now
         osztaly.academic_year = academic_year
         osztaly.save()
 
-        # Collect student user IDs from the class M2M
         student_user_ids = list(osztaly.tanulok.values_list('id', flat=True))
 
         if student_user_ids:
-            # Bulk-archive student profiles that aren't already archived
-            student_profiles_qs = Profile.objects.filter(
+            archived_counts['students'] = Profile.objects.filter(
                 user_id__in=student_user_ids,
                 archived=False
-            )
-            archived_counts['students'] = student_profiles_qs.update(
+            ).update(
                 archived=True,
                 archive_date=now,
                 academic_year=academic_year
             )
 
-            # All profile IDs for students (including already-archived ones so we
-            # don't miss igazolások/mulasztások that slipped through earlier)
-            all_student_profile_ids = list(
-                Profile.objects.filter(user_id__in=student_user_ids).values_list('id', flat=True)
-            )
-
-            # Bulk-archive all igazolások belonging to students in this class
-            archived_counts['igazolasok'] = Igazolas.objects.filter(
-                profile_id__in=all_student_profile_ids,
-                archived=False
-            ).update(archived=True, academic_year=academic_year)
-
-            # Bulk-archive all mulasztások belonging to students in this class
-            archived_counts['mulasztasok'] = Mulasztas.objects.filter(
-                uploaded_by_student_id__in=student_user_ids,
-                archived=False
-            ).update(archived=True, academic_year=academic_year)
-
-        # Optionally archive the class teacher(s)
+        # ----------------------------------------------------------------
+        # 3. Optionally archive the class teacher(s)
+        # ----------------------------------------------------------------
         if archive_teacher:
             teacher_user_ids = list(osztaly.osztalyfonokok.values_list('id', flat=True))
             if teacher_user_ids:
@@ -4666,8 +4661,8 @@ def archive_class(request, class_id: int, archive_teacher: bool = False):
                 )
 
     logger.info(
-        f"User {request.auth.username} archived class {osztaly} ({academic_year}): "
-        f"{archived_counts}, total students in class: {len(student_user_ids)}"
+        f"User {request.auth.username} closed academic year {academic_year}, "
+        f"outgoing class: {osztaly}, counts: {archived_counts}"
     )
     return 200, {
         'archived_count': archived_counts,
