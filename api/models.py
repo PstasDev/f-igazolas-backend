@@ -21,13 +21,25 @@ class Profile(models.Model):
     academic_year = models.CharField(max_length=20, null=True, blank=True, verbose_name="Tanév", help_text="Pl. 2024/2025")
 
     def osztalyom(self):
-        return Osztaly.objects.filter(tanulok=self.user).first() or Osztaly.objects.filter(osztalyfonokok=self.user).first()
-    
+        return Osztaly.objects.filter(tanulok=self.user).first() or Osztaly.objects.filter(osztalyfonokok=self.user, archived=False).first()
+
+    def osztalyaim(self):
+        """
+        Return all currently active (non-archived) classes where this user is
+        an osztályfőnök. Supports osztályfőnök assigned to multiple classes.
+        """
+        return Osztaly.objects.filter(osztalyfonokok=self.user, archived=False)
+
     def osztalyom_igazolasai(self):
-        osztaly = Osztaly.objects.filter(osztalyfonokok=self.user).first()
-        if osztaly:
-            return osztaly.osztaly_igazolasai()
-        return Igazolas.objects.none()
+        """
+        Return Igazolás records for all active classes where this user is an
+        osztályfőnök. Combines students across every assigned class so a
+        teacher of multiple classes sees all of their students' records.
+        """
+        osztalyok = self.osztalyaim()
+        if not osztalyok.exists():
+            return Igazolas.objects.none()
+        return Igazolas.objects.filter(profile__user__osztaly__in=osztalyok).distinct()
 
     def __str__(self):
         return self.user.username
@@ -221,8 +233,19 @@ class Igazolas(models.Model):
     # URL amire feltölti a diák a fényképet, nem Image repsonse -> Google Drive
     imgDriveURL = models.URLField(max_length=300, null=True, blank=True)
 
+    # Compressed image stored on this server (replaces / complements imgDriveURL)
+    image = models.ImageField(upload_to='igazolas_images/', null=True, blank=True,
+                              verbose_name='Kép',
+                              help_text='Igazoláshoz csatolt, tömörített kép')
+
     # BKK Verification - JSON field for BKK related data
     bkk_verification = models.JSONField(null=True, blank=True)
+
+    # Detailed intervals: list of {eleje, vege} pairs for non-contiguous absences.
+    # Null means the student was absent for the full eleje–vege span.
+    # Example: [{"eleje": "2024-01-15T08:00:00Z", "vege": "2024-01-15T09:00:00Z"}, ...]
+    reszletes_idopontok = models.JSONField(null=True, blank=True, verbose_name='Részletes időpontok',
+                                           help_text='Nem összefüggő hiányzás esetén az egyes részintervallumok listája')
     
     # Sub-form data for competition types, etc.
     sub_form_data = models.JSONField(null=True, blank=True, verbose_name='Alkérdőív adatok',
@@ -242,6 +265,9 @@ class Igazolas(models.Model):
     # Feature #14: Academic Year Archival
     archived = models.BooleanField(default=False, verbose_name="Archivált", help_text="Az igazolás archivált státuszban van")
     academic_year = models.CharField(max_length=20, null=True, blank=True, verbose_name="Tanév", help_text="Pl. 2024/2025")
+
+    # Visszavonás: a diák visszavonja az igazolást (nem törlődik, csak nem látszik)
+    undoed = models.BooleanField(default=False, verbose_name="Visszavont", help_text="A diák visszavonta az igazolást")
 
     # Tanár tölti ki
 
