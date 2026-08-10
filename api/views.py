@@ -1083,7 +1083,8 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
             'reszletes_idopontok': igazolas.reszletes_idopontok,
             'allapot': igazolas.allapot,
             'megjegyzes_tanar': igazolas.megjegyzes_tanar,
-            'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
+            'kretaban_rogzitettem': igazolas.kretaban_rogzitettem,
+            'undoed': igazolas.undoed
         }
         result.append(igazolas_data)
     
@@ -1214,7 +1215,8 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
                 'reszletes_idopontok': igazolas.reszletes_idopontok,
                 'allapot': igazolas.allapot,
                 'megjegyzes_tanar': igazolas.megjegyzes_tanar,
-                'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
+                'kretaban_rogzitettem': igazolas.kretaban_rogzitettem,
+                'undoed': igazolas.undoed
             }
             result.append(igazolas_data)
         
@@ -1277,7 +1279,8 @@ def get_igazolas(request, igazolas_id: int):
         'reszletes_idopontok': igazolas.reszletes_idopontok,
         'allapot': igazolas.allapot,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
-        'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
+        'kretaban_rogzitettem': igazolas.kretaban_rogzitettem,
+        'undoed': igazolas.undoed
     }
 
 
@@ -1364,7 +1367,8 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         'reszletes_idopontok': igazolas.reszletes_idopontok,
         'allapot': igazolas.allapot,
         'megjegyzes_tanar': igazolas.megjegyzes_tanar,
-        'kretaban_rogzitettem': igazolas.kretaban_rogzitettem
+        'kretaban_rogzitettem': igazolas.kretaban_rogzitettem,
+        'undoed': igazolas.undoed
     }
 
 

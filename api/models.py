@@ -35,14 +35,16 @@ class Profile(models.Model):
         Return Igazolás records for all active classes where this user is an
         osztályfőnök. Combines students across every assigned class so a
         teacher of multiple classes sees all of their students' records.
-        Archived records are excluded.
+        Archived and student-withdrawn (undoed) records are excluded - the
+        osztályfőnök must never see records the student withdrew.
         """
         osztalyok = self.osztalyaim()
         if not osztalyok.exists():
             return Igazolas.objects.none()
         return Igazolas.objects.filter(
             profile__user__osztaly__in=osztalyok,
-            archived=False
+            archived=False,
+            undoed=False
         ).distinct()
 
     def __str__(self):
