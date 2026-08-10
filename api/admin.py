@@ -221,7 +221,7 @@ class IgazolasAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
         ('Egyéb', {
-            'fields': ('rogzites_datuma',)
+            'fields': ('rogzites_datuma', 'undoed'),
         }),
     )
     
