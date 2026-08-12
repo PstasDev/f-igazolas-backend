@@ -512,6 +512,95 @@ class SystemMessage(models.Model):
         ordering = ['-showFrom']
 
 
+class ChangeNote(models.Model):
+    """
+    "Change note" (changelog / announcement) entry shown to users as an
+    almost full-screen dismissable popup. Authored in Markdown (images
+    supported via standard Markdown image syntax and the dedicated image
+    upload endpoint). Dismissal is tracked client-side in the user's
+    Profile.frontendConfig, not on the backend.
+    """
+    title = models.CharField(max_length=200, verbose_name='Cím',
+                            help_text='A bejegyzés címe (maximum 200 karakter)')
+    content = models.TextField(verbose_name='Tartalom',
+                              help_text='Markdown formázott tartalom (képek is beágyazhatók)')
+
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                  related_name='created_change_notes', verbose_name='Létrehozta')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Létrehozva')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Módosítva')
+    published_at = models.DateTimeField(null=True, blank=True, verbose_name='Közzététel időpontja',
+                                       help_text='Ha üres, a bejegyzés vázlat és senkinek sem jelenik meg')
+
+    show_to_students = models.BooleanField(default=True, verbose_name='Diákoknak mutatva')
+    show_to_teachers = models.BooleanField(default=True, verbose_name='Tanároknak mutatva')
+    target_classes = models.ManyToManyField('Osztaly', blank=True, related_name='change_notes',
+                                           verbose_name='Célosztályok',
+                                           help_text='Ha üres, minden osztály látja (a fenti kapcsolóknak megfelelően)')
+
+    def __str__(self):
+        return self.title
+
+    def is_published(self, check_datetime=None):
+        """Check whether this change note is currently published."""
+        if self.published_at is None:
+            return False
+        if check_datetime is None:
+            check_datetime = timezone.now()
+        return self.published_at <= check_datetime
+
+    def is_visible_to(self, user):
+        """Check whether this change note should be shown to the given user."""
+        if not self.is_published():
+            return False
+
+        teacher_classes = Osztaly.objects.filter(osztalyfonokok=user)
+        is_teacher = teacher_classes.exists()
+
+        if is_teacher:
+            if not self.show_to_teachers:
+                return False
+            if self.target_classes.exists():
+                return self.target_classes.filter(id__in=teacher_classes.values_list('id', flat=True)).exists()
+            return True
+
+        if not self.show_to_students:
+            return False
+        if self.target_classes.exists():
+            profile = getattr(user, 'profile', None)
+            student_class = profile.osztalyom() if profile else None
+            if not student_class:
+                return False
+            return self.target_classes.filter(id=student_class.id).exists()
+        return True
+
+    class Meta:
+        verbose_name = 'Változás bejegyzés'
+        verbose_name_plural = 'Változás bejegyzések'
+        ordering = ['-published_at', '-created_at']
+
+
+class ChangeNoteImage(models.Model):
+    """
+    Image uploaded for use inside a ChangeNote's Markdown content.
+    Kept as a standalone model (not required to belong to a note yet) so
+    images can be uploaded from the editor before the note itself is saved.
+    """
+    change_note = models.ForeignKey(ChangeNote, on_delete=models.CASCADE, null=True, blank=True,
+                                   related_name='images', verbose_name='Változás bejegyzés')
+    image = models.ImageField(upload_to='change_note_images/', verbose_name='Kép')
+    uploaded_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                   verbose_name='Feltöltötte')
+    uploaded_at = models.DateTimeField(auto_now_add=True, verbose_name='Feltöltve')
+
+    def __str__(self):
+        return f'Kép #{self.id}'
+
+    class Meta:
+        verbose_name = 'Változás bejegyzés kép'
+        verbose_name_plural = 'Változás bejegyzés képek'
+
+
 class TanitasiSzunet(models.Model):
     """
     Model to store school breaks that apply to all students globally.

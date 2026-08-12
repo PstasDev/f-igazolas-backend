@@ -17,7 +17,8 @@ import requests
 from .models import (
     Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas,
     PasswordResetOTP, ForgotPasswordToken, SystemMessage,
-    TanitasiSzunet, Override, PermissionChangeLog
+    TanitasiSzunet, Override, PermissionChangeLog,
+    ChangeNote, ChangeNoteImage
 )
 from .schemas import (
     LoginRequest, TokenResponse, ErrorResponse,
@@ -53,7 +54,9 @@ from .schemas import (
     PermissionMatrixResponse, UpdatePermissionRequest, UpdatePermissionResponse,
     BulkUpdatePermissionsRequest, BulkUpdatePermissionsResponse,
     AssignClassesRequest, TeacherClassesResponse,
-    IgazolasUndoResponse
+    IgazolasUndoResponse,
+    ChangeNoteSchema, ChangeNoteCreateRequest, ChangeNoteUpdateRequest,
+    ChangeNoteImageUploadResponse
 )
 from .jwt_utils import generate_jwt_token, decode_jwt_token
 from .authentication import JWTAuth
@@ -66,6 +69,7 @@ from .admin_utils import (
     log_permission_change, get_permission_history, invalidate_user_sessions,
     get_user_full_name, is_teacher, can_remove_teacher_from_class
 )
+from .utils import compress_igazolas_image
 from .ftv_sync import (
     sync_user_absences_from_ftv, 
     sync_class_absences_from_ftv,
@@ -2133,6 +2137,171 @@ def manual_ftv_sync(request, debug_performance: str = "false"):
             'error': 'Server error',
             'detail': 'An unexpected error occurred during sync'
         }
+
+
+# ============================================================================
+# Change Notes Endpoints
+# ============================================================================
+
+def _serialize_change_note(note: ChangeNote) -> dict:
+    target_classes = list(note.target_classes.all())
+    return {
+        'id': note.id,
+        'title': note.title,
+        'content': note.content,
+        'created_at': note.created_at,
+        'updated_at': note.updated_at,
+        'published_at': note.published_at,
+        'is_published': note.is_published(),
+        'show_to_students': note.show_to_students,
+        'show_to_teachers': note.show_to_teachers,
+        'target_class_ids': [c.id for c in target_classes],
+        'target_class_names': [c.nev for c in target_classes],
+        'created_by_username': note.created_by.username if note.created_by else None,
+    }
+
+
+@api.get("/change-notes", response={200: List[ChangeNoteSchema], 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Change Notes"])
+def list_change_notes(request):
+    """List all change notes including drafts (superuser only, for admin management)."""
+    if not request.auth.is_superuser:
+        return 403, {'error': 'Forbidden', 'detail': 'Only superusers can list all change notes'}
+
+    notes = ChangeNote.objects.all().prefetch_related('target_classes')
+    return 200, [_serialize_change_note(n) for n in notes]
+
+
+@api.get("/change-notes/active", response={200: List[ChangeNoteSchema], 401: ErrorResponse}, auth=jwt_auth, tags=["Change Notes"])
+def get_active_change_notes(request):
+    """
+    Get published change notes currently visible to the authenticated user.
+
+    Visibility depends on the note's audience targeting (students/teachers and
+    optional target classes). Dismissal state is tracked client-side in the
+    user's frontend config, not on the backend.
+    """
+    notes = ChangeNote.objects.filter(
+        published_at__isnull=False,
+        published_at__lte=timezone.now()
+    ).prefetch_related('target_classes')
+    visible = [n for n in notes if n.is_visible_to(request.auth)]
+    return 200, [_serialize_change_note(n) for n in visible]
+
+
+@api.post("/change-notes", response={201: ChangeNoteSchema, 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Change Notes"])
+def create_change_note(request, data: ChangeNoteCreateRequest):
+    """Create a new change note (superuser only)."""
+    if not request.auth.is_superuser:
+        return 403, {'error': 'Forbidden', 'detail': 'Only superusers can create change notes'}
+
+    note = ChangeNote.objects.create(
+        title=data.title,
+        content=data.content,
+        published_at=data.published_at,
+        show_to_students=data.show_to_students,
+        show_to_teachers=data.show_to_teachers,
+        created_by=request.auth,
+    )
+    if data.target_class_ids:
+        note.target_classes.set(Osztaly.objects.filter(id__in=data.target_class_ids))
+
+    return 201, _serialize_change_note(note)
+
+
+@api.put("/change-notes/{note_id}", response={200: ChangeNoteSchema, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Change Notes"])
+def update_change_note(request, note_id: int, data: ChangeNoteUpdateRequest):
+    """Update an existing change note (superuser only)."""
+    if not request.auth.is_superuser:
+        return 403, {'error': 'Forbidden', 'detail': 'Only superusers can update change notes'}
+
+    try:
+        note = ChangeNote.objects.get(id=note_id)
+    except ChangeNote.DoesNotExist:
+        return 404, {'error': 'Not found', 'detail': f'Change note with id {note_id} does not exist'}
+
+    if data.title is not None:
+        note.title = data.title
+    if data.content is not None:
+        note.content = data.content
+    if data.show_to_students is not None:
+        note.show_to_students = data.show_to_students
+    if data.show_to_teachers is not None:
+        note.show_to_teachers = data.show_to_teachers
+    # published_at is nullable, so distinguish "not provided" (default None from
+    # partial-update Optional field) from "explicitly cleared" is not possible
+    # here; sending published_at clears/sets it, omitting the field keeps it as-is
+    # by resubmitting the current value from the frontend edit form.
+    if 'published_at' in data.model_fields_set:
+        note.published_at = data.published_at
+
+    note.save()
+
+    if data.target_class_ids is not None:
+        note.target_classes.set(Osztaly.objects.filter(id__in=data.target_class_ids))
+
+    return 200, _serialize_change_note(note)
+
+
+@api.delete("/change-notes/{note_id}", response={200: dict, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Change Notes"])
+def delete_change_note(request, note_id: int):
+    """Delete a change note (superuser only)."""
+    if not request.auth.is_superuser:
+        return 403, {'error': 'Forbidden', 'detail': 'Only superusers can delete change notes'}
+
+    try:
+        note = ChangeNote.objects.get(id=note_id)
+    except ChangeNote.DoesNotExist:
+        return 404, {'error': 'Not found', 'detail': f'Change note with id {note_id} does not exist'}
+
+    note.delete()
+    return 200, {'message': 'Change note deleted successfully', 'success': True}
+
+
+@api.post("/change-notes/upload-image", response={200: ChangeNoteImageUploadResponse, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Change Notes"])
+def upload_change_note_image(request):
+    """
+    Upload an image for use inside a change note's Markdown content (superuser only).
+
+    Returns a URL that can be embedded directly into the Markdown content via
+    standard image syntax: ![alt text](url)
+    """
+    if not request.auth.is_superuser:
+        return 403, {'error': 'Forbidden', 'detail': 'Only superusers can upload change note images'}
+
+    if 'image' not in request.FILES:
+        return 400, {'error': 'No file uploaded', 'detail': 'Az image mező hiányzik a kérésből.'}
+
+    try:
+        processed_file = compress_igazolas_image(request.FILES['image'])
+    except ValueError as e:
+        return 400, {'error': 'Invalid image', 'detail': str(e)}
+
+    image = ChangeNoteImage(uploaded_by=request.auth)
+    image.image.save(processed_file.name, processed_file, save=True)
+
+    url = request.build_absolute_uri(f'/api/change-notes/images/{image.id}')
+    return 200, {'id': image.id, 'url': url}
+
+
+@api.get("/change-notes/images/{image_id}", auth=jwt_auth, tags=["Change Notes"])
+def get_change_note_image(request, image_id: int):
+    """Serve a change note image (requires authentication)."""
+    import os
+    import mimetypes
+
+    try:
+        image = ChangeNoteImage.objects.get(id=image_id)
+    except ChangeNoteImage.DoesNotExist:
+        return HttpResponse(status=404)
+
+    if not image.image or not os.path.isfile(image.image.path):
+        return HttpResponse(status=404)
+
+    content_type, _ = mimetypes.guess_type(image.image.path)
+    content_type = content_type or 'application/octet-stream'
+
+    with open(image.image.path, 'rb') as f:
+        return HttpResponse(f.read(), content_type=content_type)
 
 
 # ============================================================================

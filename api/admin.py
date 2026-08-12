@@ -5,7 +5,8 @@ from django.utils.html import format_html
 from django.utils import timezone
 from .models import (
     Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas, 
-    SystemMessage, TanitasiSzunet, Override, APIMetrics
+    SystemMessage, TanitasiSzunet, Override, APIMetrics,
+    ChangeNote, ChangeNoteImage
 )
 
 
@@ -278,6 +279,49 @@ class IgazolasAdmin(admin.ModelAdmin):
     def changeform_view(self, request, *args, **kwargs):
         self._current_request = request
         return super().changeform_view(request, *args, **kwargs)
+
+
+# ChangeNote Admin
+class ChangeNoteImageInline(admin.TabularInline):
+    model = ChangeNoteImage
+    extra = 0
+    readonly_fields = ['uploaded_by', 'uploaded_at']
+
+
+@admin.register(ChangeNote)
+class ChangeNoteAdmin(admin.ModelAdmin):
+    list_display = ['id', 'title', 'is_currently_published', 'show_to_students', 'show_to_teachers', 'published_at', 'created_by', 'updated_at']
+    list_filter = ['show_to_students', 'show_to_teachers', 'published_at']
+    search_fields = ['title', 'content']
+    filter_horizontal = ['target_classes']
+    readonly_fields = ['created_by', 'created_at', 'updated_at']
+    inlines = [ChangeNoteImageInline]
+
+    fieldsets = (
+        ('Tartalom', {
+            'fields': ('title', 'content')
+        }),
+        ('Célközönség', {
+            'fields': ('show_to_students', 'show_to_teachers', 'target_classes')
+        }),
+        ('Közzététel', {
+            'fields': ('published_at',)
+        }),
+        ('Metaadatok', {
+            'fields': ('created_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def is_currently_published(self, obj):
+        return obj.is_published()
+    is_currently_published.boolean = True
+    is_currently_published.short_description = 'Közzétett'
+
+    def save_model(self, request, obj, form, change):
+        if not change or not obj.created_by:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
 
 
 # SystemMessage Admin

@@ -286,6 +286,45 @@ class ToggleIgazolasTipusResponse(Schema):
     osztaly_ids: Optional[List[int]] = None  # IDs of classes that were updated
 
 
+# Change Note schemas
+class ChangeNoteSchema(Schema):
+    id: int
+    title: str
+    content: str
+    created_at: datetime
+    updated_at: datetime
+    published_at: Optional[datetime] = None
+    is_published: bool
+    show_to_students: bool
+    show_to_teachers: bool
+    target_class_ids: List[int] = []
+    target_class_names: List[str] = []
+    created_by_username: Optional[str] = None
+
+
+class ChangeNoteCreateRequest(Schema):
+    title: str
+    content: str
+    published_at: Optional[datetime] = None
+    show_to_students: bool = True
+    show_to_teachers: bool = True
+    target_class_ids: List[int] = []
+
+
+class ChangeNoteUpdateRequest(Schema):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    published_at: Optional[datetime] = None
+    show_to_students: Optional[bool] = None
+    show_to_teachers: Optional[bool] = None
+    target_class_ids: Optional[List[int]] = None
+
+
+class ChangeNoteImageUploadResponse(Schema):
+    id: int
+    url: str
+
+
 # System Message schemas
 class SystemMessageSchema(Schema):
     id: int
