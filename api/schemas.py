@@ -172,7 +172,8 @@ class IgazolasCreateRequest(Schema):
 
 # Quick action schemas
 class QuickActionRequest(Schema):
-    action: str  # 'Elfogadva' or 'Elutasítva'
+    action: str  # 'Elfogadva', 'Elutasítva', 'Függőben' or 'Hiánypótlásra visszaküldve'
+    megjegyzes_tanar: Optional[str] = None  # Optional teacher comment, e.g. hiánypótlás reason
 
 
 class BulkQuickActionRequest(Schema):

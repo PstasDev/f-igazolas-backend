@@ -23,7 +23,7 @@ from .models import (
 from .schemas import (
     LoginRequest, TokenResponse, ErrorResponse,
     ProfileSchema, OsztalySchema, MulasztasSchema,
-    IgazolasTipusSchema, IgazolasSchema, IgazolasCreateRequest,
+    IgazolasTipusSchema, IgazolasSchema, IgazolasCreateRequest, IgazolasEditRequest,
     OsztalySimpleSchema, QuickActionRequest, BulkQuickActionRequest,
     QuickActionResponse, BulkQuickActionResponse, TeacherCommentUpdateRequest,
     TeacherCommentUpdateResponse, DiakjaSignleSchema, DiakjaCreateRequest, 
@@ -1381,12 +1381,12 @@ def create_igazolas(request, data: IgazolasCreateRequest):
 @api.post("/igazolas/{igazolas_id}/quick-action", response={200: QuickActionResponse, 400: ErrorResponse, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
 def quick_action_igazolas(request, igazolas_id: int, data: QuickActionRequest):
     """
-    Quick action to change igazolas status (Elfogadva/Elutasítva/Függőben).
+    Quick action to change igazolas status (Elfogadva/Elutasítva/Függőben/Hiánypótlásra visszaküldve).
     
     Requires authentication. Only teachers (osztályfőnök) can perform quick actions.
     """
     # Validate action
-    valid_actions = ['Elfogadva', 'Elutasítva', 'Függőben']
+    valid_actions = ['Elfogadva', 'Elutasítva', 'Függőben', 'Hiánypótlásra visszaküldve']
     if data.action not in valid_actions:
         return 400, {
             'error': 'Invalid action',
@@ -1412,7 +1412,13 @@ def quick_action_igazolas(request, igazolas_id: int, data: QuickActionRequest):
     
     # Update the status
     igazolas.allapot = data.action
+    if data.megjegyzes_tanar is not None:
+        igazolas.megjegyzes_tanar = data.megjegyzes_tanar
     igazolas.save()
+
+    if data.action == 'Hiánypótlásra visszaküldve':
+        from .email_utils import send_hianypotlas_szukseges_email
+        send_hianypotlas_szukseges_email(igazolas)
     
     return 200, {
         'id': igazolas.id,
@@ -1507,6 +1513,155 @@ def undo_igazolas(request, igazolas_id: int):
         'id': igazolas.id,
         'undoed': igazolas.undoed,
         'message': 'Igazolás successfully withdrawn'
+    }
+
+
+@api.post("/igazolas/{igazolas_id}/resubmit", response={200: QuickActionResponse, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
+def resubmit_igazolas(request, igazolas_id: int):
+    """
+    Student resubmits an igazolás that was sent back for hiánypótlás
+    (Hiánypótlásra visszaküldve), moving it back to Függőben so the
+    osztályfőnök knows the corrections are ready for review.
+    """
+    try:
+        igazolas = Igazolas.objects.get(id=igazolas_id)
+    except Igazolas.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'Igazolas with id {igazolas_id} does not exist'
+        }
+
+    profile = getattr(request.auth, 'profile', None)
+    if profile is None or igazolas.profile != profile:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'You can only resubmit your own igazolás'
+        }
+
+    if igazolas.allapot != 'Hiánypótlásra visszaküldve':
+        return 400, {
+            'error': 'Invalid state',
+            'detail': 'Only an igazolás in Hiánypótlásra visszaküldve state can be resubmitted'
+        }
+
+    igazolas.allapot = 'Függőben'
+    igazolas.save()
+
+    return 200, {
+        'id': igazolas.id,
+        'allapot': igazolas.allapot,
+        'message': 'Igazolás resubmitted successfully'
+    }
+
+
+# Student Edit Endpoint
+
+@api.put("/igazolas/{igazolas_id}", response={200: IgazolasSchema, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
+def edit_igazolas(request, igazolas_id: int, data: IgazolasEditRequest):
+    """
+    Edit an existing igazolás. Only the owning student can edit it, and only
+    while it is in Függőben or Hiánypótlásra visszaküldve state.
+    """
+    try:
+        igazolas = Igazolas.objects.select_related('profile', 'tipus').get(id=igazolas_id)
+    except Igazolas.DoesNotExist:
+        return 404, {
+            'error': 'Not found',
+            'detail': f'Igazolas with id {igazolas_id} does not exist'
+        }
+
+    profile = getattr(request.auth, 'profile', None)
+    if profile is None or igazolas.profile != profile:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'You can only edit your own igazolás'
+        }
+
+    if igazolas.undoed:
+        return 400, {
+            'error': 'Invalid state',
+            'detail': 'Cannot edit a withdrawn igazolás'
+        }
+
+    if igazolas.allapot not in ('Függőben', 'Hiánypótlásra visszaküldve'):
+        return 400, {
+            'error': 'Invalid state',
+            'detail': 'Igazolás can only be edited while Függőben or Hiánypótlásra visszaküldve'
+        }
+
+    if data.tipus is not None:
+        try:
+            igazolas.tipus = IgazolasTipus.objects.get(id=data.tipus)
+        except IgazolasTipus.DoesNotExist:
+            return 404, {
+                'error': 'Not found',
+                'detail': f'IgazolasTipus with id {data.tipus} does not exist'
+            }
+
+    new_eleje = data.eleje if data.eleje is not None else igazolas.eleje
+    new_vege = data.vege if data.vege is not None else igazolas.vege
+    if new_eleje >= new_vege:
+        return 400, {
+            'error': 'Validation error',
+            'detail': 'End time must be after start time'
+        }
+    igazolas.eleje = new_eleje
+    igazolas.vege = new_vege
+
+    fields_set = data.model_fields_set
+    if 'megjegyzes_diak' in fields_set:
+        igazolas.megjegyzes_diak = data.megjegyzes_diak
+    if 'imgDriveURL' in fields_set:
+        igazolas.imgDriveURL = data.imgDriveURL
+    if 'bkk_verification' in fields_set:
+        igazolas.bkk_verification = data.bkk_verification
+    if 'sub_form_data' in fields_set:
+        igazolas.sub_form_data = data.sub_form_data
+    if 'reszletes_idopontok' in fields_set:
+        igazolas.reszletes_idopontok = data.reszletes_idopontok
+
+    igazolas.save()
+
+    osztaly = igazolas.profile.osztalyom()
+
+    return 200, {
+        'id': igazolas.id,
+        'profile': {
+            'id': igazolas.profile.id,
+            'user': {
+                'id': igazolas.profile.user.id,
+                'username': igazolas.profile.user.username,
+                'first_name': igazolas.profile.user.first_name,
+                'last_name': igazolas.profile.user.last_name,
+                'email': igazolas.profile.user.email
+            },
+            'osztalyom': {
+                'id': osztaly.id,
+                'tagozat': osztaly.tagozat,
+                'kezdes_eve': osztaly.kezdes_eve,
+                'nev': str(osztaly)
+            } if osztaly else None
+        },
+        'mulasztasok': list(igazolas.mulasztasok.all()),
+        'eleje': igazolas.eleje,
+        'vege': igazolas.vege,
+        'tipus': igazolas.tipus,
+        'rogzites_datuma': igazolas.rogzites_datuma,
+        'megjegyzes_diak': igazolas.megjegyzes_diak,
+        'diak': igazolas.diak,
+        'ftv': igazolas.ftv,
+        'korrigalt': igazolas.korrigalt,
+        'ftv_hianyzas_id': igazolas.ftv_hianyzas_id,
+        'diak_extra_ido_elotte': igazolas.diak_extra_ido_elotte,
+        'diak_extra_ido_utana': igazolas.diak_extra_ido_utana,
+        'imgDriveURL': igazolas.imgDriveURL,
+        'image_url': igazolas.image.url if igazolas.image else None,
+        'bkk_verification': igazolas.bkk_verification,
+        'reszletes_idopontok': igazolas.reszletes_idopontok,
+        'allapot': igazolas.allapot,
+        'megjegyzes_tanar': igazolas.megjegyzes_tanar,
+        'kretaban_rogzitettem': igazolas.kretaban_rogzitettem,
+        'undoed': igazolas.undoed
     }
 
 

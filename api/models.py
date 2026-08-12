@@ -285,6 +285,7 @@ class Igazolas(models.Model):
         ('Függőben', 'Függőben'),
         ('Elfogadva', 'Elfogadva'),
         ('Elutasítva', 'Elutasítva'),
+        ('Hiánypótlásra visszaküldve', 'Hiánypótlásra visszaküldve'),
     ]
 
     allapot = models.CharField(max_length=50, default='Függőben', choices=allapotok)

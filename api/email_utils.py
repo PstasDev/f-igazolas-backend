@@ -218,3 +218,60 @@ SZLG Igazoláskezelő Rendszer
     except Exception as e:
         logger.error(f"✗ [EMAIL FAILED] Failed to send permission change notification to {user.email}: {str(e)}")
         return False
+
+
+def send_hianypotlas_szukseges_email(igazolas, subject_override=None):
+    """
+    Notify a student that their igazolás was sent back for corrections
+    (Hiánypótlásra visszaküldve) by their osztályfőnök.
+
+    Args:
+        igazolas: Igazolas model instance (already saved with the new állapot
+            and megjegyzes_tanar)
+        subject_override: Optional custom subject line (overrides default)
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    user = igazolas.profile.user
+    if not user.email:
+        logger.warning(f"[EMAIL SKIPPED] User {user.username} has no email address, cannot send hiánypótlás notification")
+        return False
+
+    try:
+        logger.debug(f"[EMAIL DEBUG] Attempting to send hiánypótlás notification to {user.email}")
+
+        subject = subject_override if subject_override else '[SZLG Igazoláskezelő] Hiánypótlás szükséges az igazolásodhoz'
+
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'https://igazolas.szlg.info')
+        login_url = f"{frontend_url}/login?editIgazolas={igazolas.id}"
+
+        html_message = render_to_string('emails/hianypotlas_szukseges.html', {
+            'user': user,
+            'igazolas': igazolas,
+            'tipus_nev': igazolas.tipus.nev,
+            'eleje': igazolas.eleje,
+            'vege': igazolas.vege,
+            'megjegyzes_tanar': igazolas.megjegyzes_tanar,
+            'login_url': login_url,
+            'current_year': timezone.now().year,
+            'timestamp': timezone.now(),
+        })
+
+        plain_message = strip_tags(html_message)
+
+        send_mail(
+            subject=subject,
+            message=plain_message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            html_message=html_message,
+            fail_silently=False,
+        )
+
+        logger.info(f"✓ [EMAIL SUCCESS] Hiánypótlás notification sent to {user.email} for igazolás #{igazolas.id}")
+        return True
+
+    except Exception as e:
+        logger.error(f"✗ [EMAIL FAILED] Failed to send hiánypótlás notification to {user.email}: {str(e)}")
+        return False
