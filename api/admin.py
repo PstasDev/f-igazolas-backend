@@ -3,11 +3,17 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
 from django.utils.html import format_html
 from django.utils import timezone
+from django import forms
+from django.shortcuts import redirect
+from django.template.response import TemplateResponse
+from django.urls import path, reverse
+from django.contrib import messages
 from .models import (
     Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas, 
     SystemMessage, TanitasiSzunet, Override, APIMetrics,
     ChangeNote, ChangeNoteImage
 )
+from .admin_utils import generate_strong_password
 
 
 # ---------------------------------------------------------------------------
@@ -55,12 +61,279 @@ class HasLoggedInFilter(admin.SimpleListFilter):
         return queryset
 
 
+# ---------------------------------------------------------------------------
+# Forms used by the multi-step import wizard
+# ---------------------------------------------------------------------------
+
+class EmailListForm(forms.Form):
+    """Step 1 – paste email list and choose target class."""
+    email_list = forms.CharField(
+        label='E-mail címek (soronként egy)',
+        widget=forms.Textarea(attrs={'rows': 12, 'cols': 60,
+                                     'placeholder': 'pelda@iskola.hu\nmásik@iskola.hu'}),
+        help_text='Minden sorba egy e-mail cím. Már meglévő felhasználók frissítve lesznek.',
+    )
+    osztaly = forms.ModelChoiceField(
+        queryset=Osztaly.objects.filter(archived=False).order_by('kezdes_eve', 'tagozat'),
+        label='Osztály',
+        help_text='Az összes új tanuló ebbe az osztályba kerül.',
+    )
+
+
+class NamesFormSet(forms.BaseFormSet):
+    pass
+
+
+def make_name_form(email, existing_user=None):
+    """Return a Form class pre-populated with existing user data if available."""
+
+    class NameForm(forms.Form):
+        email = forms.EmailField(widget=forms.HiddenInput())
+        last_name = forms.CharField(label='Vezetéknév', max_length=150)
+        first_name = forms.CharField(label='Keresztnév', max_length=150)
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            if not args and not kwargs.get('data'):
+                # Pre-populate with existing user data
+                self.fields['email'].initial = email
+                if existing_user:
+                    self.fields['last_name'].initial = existing_user.last_name
+                    self.fields['first_name'].initial = existing_user.first_name
+
+    return NameForm
+
+
+# ---------------------------------------------------------------------------
 # Custom User Admin
+# ---------------------------------------------------------------------------
+
 class UserAdmin(BaseUserAdmin):
     list_display = ['username', 'email', 'first_name', 'last_name', 'last_login', 'is_staff', 'is_active']
     list_filter = BaseUserAdmin.list_filter + (HasLoggedInFilter,)
-    actions = ['flip_first_last_name']
-    
+    actions = ['flip_first_last_name', 'import_via_email_list']
+
+    # ------------------------------------------------------------------
+    # Custom URLs for the import wizard
+    # ------------------------------------------------------------------
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom = [
+            path(
+                'import-email-list/',
+                self.admin_site.admin_view(self.import_email_list_step1),
+                name='auth_user_import_email_list_step1',
+            ),
+            path(
+                'import-email-list/names/',
+                self.admin_site.admin_view(self.import_email_list_step2),
+                name='auth_user_import_email_list_step2',
+            ),
+            path(
+                'import-email-list/confirm/',
+                self.admin_site.admin_view(self.import_email_list_confirm),
+                name='auth_user_import_email_list_confirm',
+            ),
+        ]
+        return custom + urls
+
+    # ------------------------------------------------------------------
+    # Action – just redirects to step 1
+    # ------------------------------------------------------------------
+
+    @admin.action(description='📥 Osztály importálása e-mail lista alapján')
+    def import_via_email_list(self, request, queryset):
+        url = reverse('admin:auth_user_import_email_list_step1')
+        return redirect(url)
+
+    # ------------------------------------------------------------------
+    # Step 1 – email list + choose class
+    # ------------------------------------------------------------------
+
+    def import_email_list_step1(self, request):
+        if request.method == 'POST':
+            form = EmailListForm(request.POST)
+            if form.is_valid():
+                raw = form.cleaned_data['email_list']
+                emails = [e.strip() for e in raw.splitlines() if e.strip()]
+                if not emails:
+                    form.add_error('email_list', 'Legalább egy e-mail cím szükséges.')
+                else:
+                    # Store in session and move to step 2
+                    request.session['import_emails'] = emails
+                    request.session['import_osztaly_id'] = form.cleaned_data['osztaly'].pk
+                    return redirect(reverse('admin:auth_user_import_email_list_step2'))
+        else:
+            form = EmailListForm()
+
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Osztály importálása e-mail lista alapján – 1. lépés',
+            'form': form,
+            'opts': self.model._meta,
+            'step': 1,
+        }
+        return TemplateResponse(request, 'admin/import_email_list_step1.html', context)
+
+    # ------------------------------------------------------------------
+    # Step 2 – enter/confirm names for each email
+    # ------------------------------------------------------------------
+
+    def import_email_list_step2(self, request):
+        emails = request.session.get('import_emails')
+        osztaly_id = request.session.get('import_osztaly_id')
+        if not emails or not osztaly_id:
+            messages.error(request, 'Lejárt a munkamenet. Kezdje elölről.')
+            return redirect(reverse('admin:auth_user_import_email_list_step1'))
+
+        try:
+            osztaly = Osztaly.objects.get(pk=osztaly_id)
+        except Osztaly.DoesNotExist:
+            messages.error(request, 'A kiválasztott osztály nem található.')
+            return redirect(reverse('admin:auth_user_import_email_list_step1'))
+
+        existing_users = {u.email: u for u in User.objects.filter(email__in=emails)}
+
+        if request.method == 'POST':
+            rows = []
+            valid = True
+            for idx, email in enumerate(emails):
+                last = request.POST.get(f'last_name_{idx}', '').strip()
+                first = request.POST.get(f'first_name_{idx}', '').strip()
+                if not last or not first:
+                    valid = False
+                rows.append({'email': email, 'last_name': last, 'first_name': first})
+
+            if valid:
+                # Store names in session and proceed to confirm
+                request.session['import_rows'] = rows
+                return redirect(reverse('admin:auth_user_import_email_list_confirm'))
+            else:
+                messages.error(request, 'Minden sorban meg kell adni a nevet.')
+                # Fall through to re-render with submitted values
+
+        else:
+            rows = []
+            for email in emails:
+                u = existing_users.get(email)
+                rows.append({
+                    'email': email,
+                    'last_name': u.last_name if u else '',
+                    'first_name': u.first_name if u else '',
+                    'exists': bool(u),
+                })
+
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Osztály importálása e-mail lista alapján – 2. lépés',
+            'rows': rows,
+            'osztaly': osztaly,
+            'opts': self.model._meta,
+            'step': 2,
+        }
+        return TemplateResponse(request, 'admin/import_email_list_step2.html', context)
+
+    # ------------------------------------------------------------------
+    # Step 3 – do the actual import
+    # ------------------------------------------------------------------
+
+    def import_email_list_confirm(self, request):
+        rows = request.session.get('import_rows')
+        osztaly_id = request.session.get('import_osztaly_id')
+        if not rows or not osztaly_id:
+            messages.error(request, 'Lejárt a munkamenet. Kezdje elölről.')
+            return redirect(reverse('admin:auth_user_import_email_list_step1'))
+
+        try:
+            osztaly = Osztaly.objects.get(pk=osztaly_id)
+        except Osztaly.DoesNotExist:
+            messages.error(request, 'A kiválasztott osztály nem található.')
+            return redirect(reverse('admin:auth_user_import_email_list_step1'))
+
+        if request.method == 'POST':
+            created_count = 0
+            updated_count = 0
+            passwords = []
+            for row in rows:
+                email = row['email']
+                username = email.split('@')[0]
+                last_name = row['last_name']
+                first_name = row['first_name']
+
+                user, created = User.objects.get_or_create(
+                    username=username,
+                    defaults={
+                        'email': email,
+                        'last_name': last_name,
+                        'first_name': first_name,
+                    },
+                )
+                if created:
+                    raw_password = generate_strong_password()
+                    user.set_password(raw_password)
+                    user.save()
+                    passwords.append({'email': email, 'name': f'{last_name} {first_name}', 'password': raw_password})
+                    created_count += 1
+                else:
+                    # Update name if changed
+                    changed = False
+                    if last_name and user.last_name != last_name:
+                        user.last_name = last_name
+                        changed = True
+                    if first_name and user.first_name != first_name:
+                        user.first_name = first_name
+                        changed = True
+                    if changed:
+                        user.save()
+                    updated_count += 1
+
+                # Ensure profile exists
+                Profile.objects.get_or_create(user=user)
+                # Add to class
+                osztaly.tanulok.add(user)
+
+            # Clean up session
+            request.session.pop('import_emails', None)
+            request.session.pop('import_osztaly_id', None)
+            request.session.pop('import_rows', None)
+
+            messages.success(
+                request,
+                f'{created_count} új felhasználó létrehozva, {updated_count} meglévő frissítve. '
+                f'Mind hozzáadva: {osztaly}.',
+            )
+
+            context = {
+                **self.admin_site.each_context(request),
+                'title': 'Import sikeres',
+                'passwords': passwords,
+                'osztaly': osztaly,
+                'created_count': created_count,
+                'updated_count': updated_count,
+                'opts': self.model._meta,
+                'step': 'done',
+            }
+            return TemplateResponse(request, 'admin/import_email_list_done.html', context)
+
+        # GET – show confirmation table
+        existing = {u.email for u in User.objects.filter(email__in=[r['email'] for r in rows])}
+        annotated_rows = [dict(r, exists=r['email'] in existing) for r in rows]
+
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Osztály importálása e-mail lista alapján – Megerősítés',
+            'rows': annotated_rows,
+            'osztaly': osztaly,
+            'opts': self.model._meta,
+            'step': 3,
+        }
+        return TemplateResponse(request, 'admin/import_email_list_confirm.html', context)
+
+    # ------------------------------------------------------------------
+    # Existing action
+    # ------------------------------------------------------------------
+
     @admin.action(description='Keresztnév és vezetéknév felcserélése')
     def flip_first_last_name(self, request, queryset):
         """Flip first_name and last_name for selected users"""
