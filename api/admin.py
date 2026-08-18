@@ -203,7 +203,8 @@ class UserAdmin(BaseUserAdmin):
                 first = request.POST.get(f'first_name_{idx}', '').strip()
                 if not last or not first:
                     valid = False
-                rows.append({'email': email, 'last_name': last, 'first_name': first})
+                rows.append({'email': email, 'last_name': last, 'first_name': first,
+                             'exists': email in existing_users})
 
             if valid:
                 # Store names in session and proceed to confirm
@@ -257,18 +258,29 @@ class UserAdmin(BaseUserAdmin):
             passwords = []
             for row in rows:
                 email = row['email']
-                username = email.split('@')[0]
                 last_name = row['last_name']
                 first_name = row['first_name']
 
-                user, created = User.objects.get_or_create(
-                    username=username,
-                    defaults={
-                        'email': email,
-                        'last_name': last_name,
-                        'first_name': first_name,
-                    },
-                )
+                # Look up by email first to avoid matching a different user with the same username
+                existing_user = User.objects.filter(email=email).first()
+                if existing_user:
+                    user = existing_user
+                    created = False
+                else:
+                    # Derive a unique username from the local-part of the email
+                    base_username = email.split('@')[0]
+                    username = base_username
+                    suffix = 1
+                    while User.objects.filter(username=username).exists():
+                        username = f'{base_username}_{suffix}'
+                        suffix += 1
+                    user = User.objects.create_user(
+                        username=username,
+                        email=email,
+                        last_name=last_name,
+                        first_name=first_name,
+                    )
+                    created = True
                 if created:
                     raw_password = generate_strong_password()
                     user.set_password(raw_password)
