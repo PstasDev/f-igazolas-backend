@@ -74,6 +74,7 @@ from .ftv_sync import (
     sync_user_absences_from_ftv, 
     sync_class_absences_from_ftv,
     sync_base_from_ftv,
+    sync_full_from_ftv,
     FTVSyncError, 
     get_cache_metadata
 )
@@ -2288,6 +2289,58 @@ def manual_ftv_sync(request, debug_performance: str = "false"):
         }
     except Exception as e:
         logger.error(f"Unexpected error during manual FTV sync: {str(e)}")
+        return 500, {
+            'error': 'Server error',
+            'detail': 'An unexpected error occurred during sync'
+        }
+
+
+@api.post("/sync/ftv/full", response={200: dict, 403: ErrorResponse, 500: ErrorResponse}, auth=jwt_auth, tags=["FTV Sync"])
+def manual_full_ftv_sync(request, debug_performance: str = "false"):
+    """
+    Manually trigger a full FTV sync (superuser only).
+
+    Syncs base data (classes + students) AND absences for every class, so the
+    result is a complete refresh of all igazolások - used by the admin
+    "FTV Sync" button under Osztályok.
+
+    Args:
+        debug_performance: 'true' to fetch and log performance details from FTV backend
+    """
+    if not request.auth.is_superuser:
+        return 403, {
+            'error': 'Forbidden',
+            'detail': 'Only superusers can trigger a full FTV sync'
+        }
+
+    # Convert debug_performance string to boolean
+    debug_perf = debug_performance.lower() in ('true', '1', 'yes')
+
+    # Determine if we should print performance (dev mode only)
+    should_print_perf = debug_perf and settings.DEBUG
+
+    try:
+        logger.info(f"Manual full FTV sync triggered by user {request.auth.username}")
+        sync_result = sync_full_from_ftv(debug_performance=debug_perf)
+
+        # Print performance details in dev mode
+        if should_print_perf and sync_result.get('ftv_performance'):
+            logger.info(f"FTV Performance Details: {sync_result['ftv_performance']}")
+
+        return 200, {
+            'success': True,
+            'message': 'Full FTV sync completed successfully',
+            'statistics': sync_result.get('statistics'),
+            'metadata': get_cache_metadata('base')
+        }
+    except FTVSyncError as e:
+        logger.error(f"Manual full FTV sync failed: {str(e)}")
+        return 500, {
+            'error': 'Sync failed',
+            'detail': str(e)
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error during manual full FTV sync: {str(e)}")
         return 500, {
             'error': 'Server error',
             'detail': 'An unexpected error occurred during sync'

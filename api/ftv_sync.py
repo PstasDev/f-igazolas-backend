@@ -1014,3 +1014,87 @@ def sync_base_from_ftv(debug_performance: bool = False) -> Dict:
         logger.error(f"Unexpected error during FTV base sync: {str(e)}")
         update_cache_metadata('base', 'failed', stats)
         raise FTVSyncError(f"Base sync failed: {str(e)}")
+
+
+def sync_full_from_ftv(debug_performance: bool = False) -> Dict:
+    """
+    Full sync - syncs base data (classes + students) AND absences for every class.
+
+    Unlike sync_base_from_ftv (classes/students only), this also calls
+    sync_class_absences_from_ftv for every Osztaly, so it produces a complete,
+    up-to-date set of igazolások across the whole school - used by the
+    admin "FTV Sync" button under Osztályok.
+
+    Args:
+        debug_performance: Whether to request and return performance data
+
+    Returns:
+        Dict with aggregated sync statistics and optional performance data
+    """
+    stats = {
+        'classes_synced': 0,
+        'students_synced': 0,
+        'users_synced': 0,
+        'igazolasok_created': 0,
+        'igazolasok_updated': 0,
+        'igazolasok_deleted': 0,
+        'errors': 0,
+    }
+
+    ftv_performance = None
+
+    try:
+        logger.info("Starting full FTV sync (base + all class absences)...")
+
+        # Step 1: base sync (classes + students)
+        base_result = sync_base_from_ftv(debug_performance=debug_performance)
+        base_stats = base_result.get('statistics', {})
+        stats['classes_synced'] = base_stats.get('classes_synced', 0)
+        stats['students_synced'] = base_stats.get('students_synced', 0)
+        stats['errors'] += base_stats.get('errors', 0)
+        if debug_performance and base_result.get('ftv_performance'):
+            ftv_performance = {'base': base_result['ftv_performance']}
+
+        # Step 2: sync absences for every class
+        osztalyok = list(Osztaly.objects.all())
+        class_performance = []
+        for osztaly in osztalyok:
+            try:
+                class_result = sync_class_absences_from_ftv(osztaly, debug_performance=debug_performance)
+                class_stats = class_result.get('statistics', {})
+                stats['users_synced'] += class_stats.get('users_synced', 0)
+                stats['igazolasok_created'] += class_stats.get('igazolasok_created', 0)
+                stats['igazolasok_updated'] += class_stats.get('igazolasok_updated', 0)
+                stats['igazolasok_deleted'] += class_stats.get('igazolasok_deleted', 0)
+                stats['errors'] += class_stats.get('errors', 0)
+                if debug_performance and class_result.get('ftv_performance'):
+                    class_performance.append({'osztaly': str(osztaly), 'performance': class_result['ftv_performance']})
+            except FTVSyncError as e:
+                stats['errors'] += 1
+                logger.error(f"Error syncing absences for class {osztaly}: {str(e)}")
+            except Exception as e:
+                stats['errors'] += 1
+                logger.error(f"Unexpected error syncing absences for class {osztaly}: {str(e)}")
+
+        if debug_performance and class_performance:
+            ftv_performance = ftv_performance or {}
+            ftv_performance['classes'] = class_performance
+
+        logger.info(f"Full sync completed: {stats}")
+
+        update_cache_metadata('base', 'success', stats)
+
+        result = {'statistics': stats}
+        if ftv_performance and debug_performance:
+            result['ftv_performance'] = ftv_performance
+
+        return result
+
+    except FTVSyncError as e:
+        logger.error(f"Full FTV sync failed: {str(e)}")
+        update_cache_metadata('base', 'failed', stats)
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error during full FTV sync: {str(e)}")
+        update_cache_metadata('base', 'failed', stats)
+        raise FTVSyncError(f"Full sync failed: {str(e)}")
