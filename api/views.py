@@ -2069,7 +2069,13 @@ def get_diakjaim(request):
                     'nev': igazolas.tipus.nev,
                     'leiras': igazolas.tipus.leiras,
                     'beleszamit': igazolas.tipus.beleszamit,
-                    'iskolaerdeku': igazolas.tipus.iskolaerdeku
+                    'iskolaerdeku': igazolas.tipus.iskolaerdeku,
+                    'category': igazolas.tipus.category,
+                    'category_emoji': igazolas.tipus.category_emoji,
+                    'has_sub_form': igazolas.tipus.has_sub_form,
+                    'display_order': igazolas.tipus.display_order,
+                    'supports_group_absence': igazolas.tipus.supports_group_absence,
+                    'requires_studios': igazolas.tipus.requires_studios
                 },
                 'allapot': igazolas.allapot,
                 'rogzites_datuma': igazolas.rogzites_datuma,
