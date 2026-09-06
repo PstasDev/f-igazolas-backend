@@ -23,6 +23,19 @@ class FTVSyncError(Exception):
     pass
 
 
+def ftv_to_bool(value) -> bool:
+    """Convert various FTV API value types (bool/str/int) to a Python bool safely"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        if not value or value.strip() == '' or value.strip() == '0':
+            return False
+        return value.strip().lower() in ('true', '1', 'yes')
+    if isinstance(value, (int, float)):
+        return bool(value) and value != 0
+    return False
+
+
 def get_cache_metadata(sync_type: str = 'base') -> Dict:
     """
     Get FTV sync metadata for responses.
@@ -411,8 +424,26 @@ def sync_ftv_absence(ftv_absence: Dict, user: User, ftv_tipus: IgazolasTipus) ->
     # Ensure korrigalt is explicitly boolean
     korrigalt = bool(student_edited and (diak_extra_ido_elotte or diak_extra_ido_utana))
     
+    # Többnapos forgatás mezők (lásd FTV Sync API update - Többnapos forgatások)
+    ftv_forgatas_id = ftv_absence.get('forgatas_id')
+    if ftv_forgatas_id is not None:
+        try:
+            ftv_forgatas_id = int(ftv_forgatas_id)
+        except (ValueError, TypeError):
+            ftv_forgatas_id = None
+    
+    ftv_tobbnapos = ftv_to_bool(ftv_absence.get('is_multi_day', False))
+    # can_be_corrected hiánya (régebbi/egynapos rekordok) -> True, a régi viselkedés megtartásához
+    ftv_korrigalhato = ftv_to_bool(ftv_absence.get('can_be_corrected', True))
+    
     # Prepare megjegyzes from FTV data
     forgatas_details = ftv_absence.get('forgatas_details', {})
+    ftv_forgatas_veg_datum = forgatas_details.get('end_date') or ftv_absence.get('date')
+    if ftv_forgatas_veg_datum:
+        try:
+            ftv_forgatas_veg_datum = datetime.strptime(ftv_forgatas_veg_datum, '%Y-%m-%d').date()
+        except (ValueError, TypeError):
+            ftv_forgatas_veg_datum = None
     megjegyzes_parts = []
     
     # Format: <Forgatás type>: <Forgatás name>
@@ -446,21 +477,8 @@ def sync_ftv_absence(ftv_absence: Dict, user: User, ftv_tipus: IgazolasTipus) ->
     ftv_unexcused = ftv_absence.get('unexcused', False)
     
     # Convert to proper boolean - handle strings, numbers, and actual booleans
-    def to_bool(value):
-        """Convert various types to boolean safely"""
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            # Empty string or "0" or "false" (case insensitive) = False
-            if not value or value.strip() == '' or value.strip() == '0':
-                return False
-            return value.strip().lower() in ('true', '1', 'yes')
-        if isinstance(value, (int, float)):
-            return bool(value) and value != 0
-        return False
-    
-    ftv_excused = to_bool(ftv_excused)
-    ftv_unexcused = to_bool(ftv_unexcused)
+    ftv_excused = ftv_to_bool(ftv_excused)
+    ftv_unexcused = ftv_to_bool(ftv_unexcused)
     
     # Determine status based on FTV data (only used for NEW records)
     if ftv_excused:
@@ -481,6 +499,10 @@ def sync_ftv_absence(ftv_absence: Dict, user: User, ftv_tipus: IgazolasTipus) ->
         igazolas.diak_extra_ido_elotte = diak_extra_ido_elotte
         igazolas.diak_extra_ido_utana = diak_extra_ido_utana
         igazolas.megjegyzes_diak = megjegyzes
+        igazolas.ftv_forgatas_id = ftv_forgatas_id
+        igazolas.ftv_tobbnapos = ftv_tobbnapos
+        igazolas.ftv_korrigalhato = ftv_korrigalhato
+        igazolas.ftv_forgatas_veg_datum = ftv_forgatas_veg_datum
         # NOTE: allapot is NOT updated for existing records - teacher may have changed it locally
         igazolas.save()
         
@@ -502,6 +524,10 @@ def sync_ftv_absence(ftv_absence: Dict, user: User, ftv_tipus: IgazolasTipus) ->
                 diak_extra_ido_elotte=diak_extra_ido_elotte,
                 diak_extra_ido_utana=diak_extra_ido_utana,
                 ftv_hianyzas_id=ftv_hianyzas_id,
+                ftv_forgatas_id=ftv_forgatas_id,
+                ftv_tobbnapos=ftv_tobbnapos,
+                ftv_korrigalhato=ftv_korrigalhato,
+                ftv_forgatas_veg_datum=ftv_forgatas_veg_datum,
                 allapot=ftv_allapot  # Sync status from FTV for new records only
             )
             

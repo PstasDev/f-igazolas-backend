@@ -235,6 +235,13 @@ class Igazolas(models.Model):
     korrigalt = models.BooleanField(default=False)  # FTVből importált igazolás, diák által korrigált változata
     ftv_hianyzas_id = models.IntegerField(null=True, blank=True, unique=True)  # FTV hiányzás ID for sync tracking
 
+    # Többnapos FTV forgatások támogatása: egy forgatáshoz (ftv_forgatas_id) több
+    # napi Absence/Igazolas rekord is tartozhat, mindegyik saját ftv_hianyzas_id-vel.
+    ftv_forgatas_id = models.IntegerField(null=True, blank=True)  # FTV forgatás ID (nem egyedi - több napi rekord is hivatkozhat rá)
+    ftv_tobbnapos = models.BooleanField(default=False)  # FTV is_multi_day - a forgatás több naptári napon átnyúlik
+    ftv_korrigalhato = models.BooleanField(default=True)  # FTV can_be_corrected - False többnapos hiányzásnál, a diák nem korrigálhatja
+    ftv_forgatas_veg_datum = models.DateField(null=True, blank=True)  # forgatas_details.end_date - a forgatás befejezésének dátuma
+
     # Korrekció
     diak_extra_ido_elotte = models.IntegerField(null=True, blank=True)  
     diak_extra_ido_utana = models.IntegerField(null=True, blank=True)

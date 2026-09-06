@@ -122,6 +122,10 @@ class IgazolasSchema(Schema):
     ftv: bool
     korrigalt: bool
     ftv_hianyzas_id: Optional[int] = None
+    ftv_forgatas_id: Optional[int] = None
+    ftv_tobbnapos: bool = False
+    ftv_korrigalhato: bool = True
+    ftv_forgatas_veg_datum: Optional[DateType] = None
     diak_extra_ido_elotte: Optional[int] = None
     diak_extra_ido_utana: Optional[int] = None
     imgDriveURL: Optional[str] = None
