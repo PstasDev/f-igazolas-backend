@@ -11,7 +11,7 @@ from django.contrib import messages
 from .models import (
     Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas, 
     SystemMessage, TanitasiSzunet, Override, APIMetrics,
-    ChangeNote, ChangeNoteImage
+    ChangeNote, ChangeNoteImage, SSOLoginFlow
 )
 from .admin_utils import generate_strong_password
 

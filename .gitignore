@@ -1,6 +1,7 @@
 /.vscode
 /db.sqlite3
 /venv
+/.venv
 
 __pycache__/
 api/migrations/__pycache__/
