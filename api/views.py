@@ -96,6 +96,9 @@ jwt_auth = JWTAuth()
 from .passkey_views import register_passkey_endpoints  # noqa: E402
 register_passkey_endpoints(api, jwt_auth)
 
+from .sso import register_sso_endpoints  # noqa: E402
+register_sso_endpoints(api)
+
 
 # BKK GTFS-RT Endpoints
 
@@ -6396,4 +6399,3 @@ def get_teacher_classes(request, teacher_id: int):
         'teacher_name': teacher.get_full_name() or teacher.username,
         'classes': classes_data
     }
-

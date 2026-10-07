@@ -163,6 +163,32 @@ JWT_SECRET_KEY = config('JWT_SECRET_KEY', default=SECRET_KEY)  # Use separate ke
 JWT_ALGORITHM = config('JWT_ALGORITHM', default='HS256')
 JWT_EXPIRATION_DELTA = config('JWT_EXPIRATION_DELTA', default=86400, cast=int)  # 24 hours in seconds
 
+# OIDC single sign-on
+SSO_ISSUER = config(
+    'SSO_ISSUER',
+    default='http://localhost:8002/o' if DEBUG else 'https://sso.szlg.info/o',
+).rstrip('/')
+SSO_CLIENT_ID = config('SSO_CLIENT_ID', default='')
+SSO_CLIENT_SECRET = config('SSO_CLIENT_SECRET', default='')
+SSO_TOKEN_AUTH_METHOD = config(
+    'SSO_TOKEN_AUTH_METHOD',
+    default='client_secret_basic' if SSO_CLIENT_SECRET else 'none',
+)
+if SSO_TOKEN_AUTH_METHOD not in ('none', 'client_secret_basic', 'client_secret_post'):
+    raise ValueError('SSO_TOKEN_AUTH_METHOD must be none, client_secret_basic, or client_secret_post')
+SSO_SCOPES = config('SSO_SCOPES', default='openid profile email groups')
+SSO_REDIRECT_URI = config(
+    'SSO_REDIRECT_URI',
+    default=(
+        'http://localhost:8000/api/auth/sso/callback'
+        if DEBUG else 'https://ikapi.szlg.info/api/auth/sso/callback'
+    ),
+)
+SSO_FRONTEND_URL = config(
+    'SSO_FRONTEND_URL',
+    default='http://localhost:3000/login' if DEBUG else 'https://igazolas.szlg.info/login',
+)
+
 # CORS Configuration
 CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=True, cast=bool)  # In production, specify allowed origins
 CORS_ALLOW_CREDENTIALS = config('CORS_ALLOW_CREDENTIALS', default=True, cast=bool)
@@ -227,4 +253,3 @@ CACHES = {
         # 'LOCATION': 'redis://127.0.0.1:6379/1',
     }
 }
-

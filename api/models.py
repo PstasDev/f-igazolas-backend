@@ -7,6 +7,34 @@ from datetime import timedelta, datetime
 
 # User modellek
 
+class SSOIdentity(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sso_identities')
+    issuer = models.CharField(max_length=255)
+    subject = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['issuer', 'subject'], name='unique_sso_issuer_subject'),
+            models.UniqueConstraint(fields=['user', 'issuer'], name='unique_sso_user_issuer'),
+        ]
+
+
+class SSOLoginFlow(models.Model):
+    state_hash = models.CharField(max_length=64, primary_key=True)
+    nonce = models.CharField(max_length=128)
+    code_verifier = models.CharField(max_length=128)
+    expires_at = models.DateTimeField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class SSOLoginTicket(models.Model):
+    token_hash = models.CharField(max_length=64, primary_key=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sso_login_tickets')
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class Profile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     frontendConfig = models.JSONField(default=dict, blank=True)  # Felhasználói frontend beállítások tárolása JSON formátumban, akármit tárolhat benne a frontend, mivel nincs backend logikához kötve
