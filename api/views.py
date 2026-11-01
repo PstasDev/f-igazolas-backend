@@ -8,9 +8,11 @@ from django_ratelimit.decorators import ratelimit
 from django.views.decorators.csrf import csrf_exempt
 from django.http import HttpResponse
 from django.conf import settings
+from django.utils.dateparse import parse_datetime
 from typing import List, Optional
 from datetime import datetime, timedelta
 from pathlib import Path
+import json
 import logging
 import requests
 
@@ -181,6 +183,124 @@ def bkk_vehicle_positions(request):
     except requests.RequestException as e:
         logger.error(f"Error fetching BKK VehiclePositions: {str(e)}")
         return HttpResponse("Error fetching BKK data", status=500, content_type="text/plain")
+
+
+@api.get(
+    "/bkk/disruptions/history",
+    response={200: dict, 400: ErrorResponse, 401: ErrorResponse},
+    auth=jwt_auth,
+    tags=["BKK"],
+)
+def bkk_disruption_history(request, date: str):
+    """Return saved BKK disruption snapshots for a date with anonymous school-wide counts."""
+    try:
+        requested_date = datetime.strptime(date, '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        return 400, {
+            'error': 'Invalid date',
+            'detail': 'A date parameter must use YYYY-MM-DD format',
+        }
+
+    def to_local_date(value):
+        if not value:
+            return None
+
+        parsed = value if isinstance(value, datetime) else parse_datetime(str(value))
+        if parsed is not None:
+            if timezone.is_naive(parsed):
+                parsed = timezone.make_aware(parsed)
+            return timezone.localtime(parsed).date()
+
+        try:
+            return datetime.strptime(str(value)[:10], '%Y-%m-%d').date()
+        except (TypeError, ValueError):
+            return None
+
+    day_start = timezone.make_aware(datetime.combine(requested_date, datetime.min.time()))
+    day_end = timezone.make_aware(datetime.combine(requested_date, datetime.max.time()))
+
+    grouped_alerts = {}
+    records = Igazolas.objects.filter(
+        bkk_verification__isnull=False,
+        undoed=False,
+        eleje__lte=day_end,
+        vege__gte=day_start,
+    ).values(
+        'profile__user_id',
+        'bkk_verification',
+        'eleje',
+        'vege',
+    ).order_by('-rogzites_datuma')
+
+    for record in records.iterator(chunk_size=500):
+        verification = record['bkk_verification']
+        if isinstance(verification, str):
+            try:
+                verification = json.loads(verification)
+            except (TypeError, ValueError):
+                continue
+
+        if not isinstance(verification, dict) or verification.get('type') != 'disruption':
+            continue
+
+        alert_data = verification.get('alert_data')
+        if not isinstance(alert_data, dict):
+            continue
+
+        active_period = alert_data.get('active_period')
+        active_period = active_period if isinstance(active_period, dict) else {}
+        record_start = to_local_date(record['eleje'])
+        record_end = to_local_date(record['vege'])
+        active_start = to_local_date(active_period.get('start')) or record_start
+        active_end = to_local_date(active_period.get('end')) or record_end or active_start
+
+        if not active_start or not active_end or not (active_start <= requested_date <= active_end):
+            continue
+
+        alert_id = str(alert_data.get('id') or '').strip()
+        title = str(alert_data.get('title') or 'BKK forgalmi zavar').strip()
+        routes = alert_data.get('affected_routes')
+        if not isinstance(routes, list):
+            routes = []
+        routes = [str(route) for route in routes if route]
+        group_key = alert_id or '|'.join((title.casefold(), ','.join(sorted(routes)), active_start.isoformat()))
+
+        if group_key not in grouped_alerts:
+            try:
+                priority = int(alert_data.get('priority', 2))
+            except (TypeError, ValueError):
+                priority = 2
+
+            grouped_alerts[group_key] = {
+                'alert': {
+                    'id': alert_id,
+                    'title': title,
+                    'description': str(alert_data.get('description') or ''),
+                    'affectedRoutes': routes,
+                    'startTime': active_period.get('start') or record['eleje'].isoformat(),
+                    'endTime': active_period.get('end') or record['vege'].isoformat(),
+                    'url': alert_data.get('url'),
+                    'category': alert_data.get('category') or 'busz',
+                    'priority': priority,
+                    'effect': str(alert_data.get('effect') or ''),
+                    'cause': str(alert_data.get('cause') or ''),
+                },
+                'student_ids': set(),
+            }
+
+        student_id = record['profile__user_id']
+        if student_id is not None:
+            grouped_alerts[group_key]['student_ids'].add(student_id)
+
+    alerts = []
+    for grouped in grouped_alerts.values():
+        other_student_count = len(grouped['student_ids'] - {request.auth.id})
+        alerts.append({
+            'alert': grouped['alert'],
+            'otherStudentCount': other_student_count,
+        })
+
+    return {'alerts': alerts}
 
 
 # Helper functions

@@ -1,12 +1,14 @@
 import base64
 import hashlib
+from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import Mock, patch
 
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
-from .models import Profile, SSOIdentity, SSOLoginFlow, SSOLoginTicket
+from .models import Igazolas, IgazolasTipus, Profile, SSOIdentity, SSOLoginFlow, SSOLoginTicket
 
 
 @override_settings(
@@ -179,3 +181,85 @@ class SSOLoginTests(TestCase):
             {'client_id': 'test-client', 'client_secret': 'test-secret'},
         )
         self.assertEqual(headers, {})
+
+
+class BKKDisruptionHistoryTests(TestCase):
+    def setUp(self):
+        self.current_user = User.objects.create_user(username='current-student')
+        self.other_user_one = User.objects.create_user(username='other-student-one')
+        self.other_user_two = User.objects.create_user(username='other-student-two')
+        self.current_profile = Profile.objects.create(user=self.current_user)
+        self.other_profile_one = Profile.objects.create(user=self.other_user_one)
+        self.other_profile_two = Profile.objects.create(user=self.other_user_two)
+        self.koezlekedes = IgazolasTipus.objects.create(nev='Közlekedés')
+        self.period_start = timezone.make_aware(datetime(2026, 11, 2, 8, 0))
+        self.period_end = timezone.make_aware(datetime(2026, 11, 2, 9, 0))
+
+    def create_disruption_igazolas(self, profile, alert_id='bkk-alert-1', active_date='2026-11-02'):
+        return Igazolas.objects.create(
+            profile=profile,
+            eleje=self.period_start,
+            vege=self.period_end,
+            tipus=self.koezlekedes,
+            bkk_verification={
+                'type': 'disruption',
+                'alert_data': {
+                    'id': alert_id,
+                    'title': 'M3 pótlóbusz',
+                    'description': 'Forgalmi változás az M3 vonalán',
+                    'affected_routes': ['M3'],
+                    'priority': 0,
+                    'category': 'metro',
+                    'effect': 'NO_SERVICE',
+                    'cause': 'MAINTENANCE',
+                    'active_period': {
+                        'start': f'{active_date}T07:00:00+00:00',
+                        'end': f'{active_date}T09:00:00+00:00',
+                    },
+                },
+            },
+        )
+
+    def test_returns_date_matching_disruptions_with_unique_anonymous_schoolwide_count(self):
+        from types import SimpleNamespace
+
+        from .views import bkk_disruption_history
+
+        self.create_disruption_igazolas(self.current_profile)
+        self.create_disruption_igazolas(self.other_profile_one)
+        self.create_disruption_igazolas(self.other_profile_one)
+        self.create_disruption_igazolas(self.other_profile_two)
+        self.create_disruption_igazolas(self.other_profile_two, alert_id='different-date', active_date='2026-11-03')
+
+        result = bkk_disruption_history(SimpleNamespace(auth=self.current_user), '2026-11-02')
+
+        self.assertEqual(len(result['alerts']), 1)
+        self.assertEqual(result['alerts'][0]['alert']['id'], 'bkk-alert-1')
+        self.assertEqual(result['alerts'][0]['otherStudentCount'], 2)
+        self.assertEqual(set(result['alerts'][0]), {'alert', 'otherStudentCount'})
+
+    def test_ignores_vehicle_verifications(self):
+        from types import SimpleNamespace
+
+        from .views import bkk_disruption_history
+
+        Igazolas.objects.create(
+            profile=self.other_profile_one,
+            eleje=self.period_start,
+            vege=self.period_end,
+            tipus=self.koezlekedes,
+            bkk_verification={'type': 'vehicle_modification'},
+        )
+
+        result = bkk_disruption_history(SimpleNamespace(auth=self.current_user), '2026-11-02')
+
+        self.assertEqual(result['alerts'], [])
+
+    def test_rejects_invalid_date(self):
+        from types import SimpleNamespace
+
+        from .views import bkk_disruption_history
+
+        status_code, _ = bkk_disruption_history(SimpleNamespace(auth=self.current_user), '02-11-2026')
+
+        self.assertEqual(status_code, 400)
