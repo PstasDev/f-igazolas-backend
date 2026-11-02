@@ -467,15 +467,47 @@ class IgazolasTipusAdmin(admin.ModelAdmin):
 # Igazolas Admin
 @admin.register(Igazolas)
 class IgazolasAdmin(admin.ModelAdmin):
-    list_display = ['id', 'get_student', 'get_osztaly', 'eleje', 'vege', 'reszletes_idopontok','tipus', 'allapot', 'get_megjegyzes_diak', 'diak', 'ftv', 'korrigalt', 'is_group_leader', 'archived', 'rogzites_datuma', 'undoed']
+    list_display = ['id', 'get_student', 'get_osztaly', 'eleje', 'vege', 'reszletes_idopontok','tipus', 'allapot', 'diak', 'ftv', 'korrigalt', 'is_group_leader', 'archived', 'rogzites_datuma', 'undoed']
     list_filter = ['allapot', 'diak', 'ftv', 'korrigalt', 'kretaban_rogzitettem', 'tipus', 'is_group_leader', 'archived', 'rogzites_datuma']
-    search_fields = ['profile__user__username', 'profile__user__first_name', 'profile__user__last_name', 'megjegyzes_diak', 'megjegyzes_tanar', 'group_id']
+    search_fields = ['profile__user__username', 'profile__user__first_name', 'profile__user__last_name', 'megjegyzes_tanar', 'group_id']
     date_hierarchy = 'rogzites_datuma'
     raw_id_fields = ['profile', 'created_by_group_leader']
     filter_horizontal = ['mulasztasok']
     readonly_fields = ['rogzites_datuma', 'group_id', 'image_preview']
     ordering = ['-rogzites_datuma']
     actions = [mark_archived, mark_unarchived]
+
+    sensitive_fields = frozenset({'megjegyzes_diak', 'image', 'image_preview', 'imgDriveURL'})
+
+    def can_view_sensitive_fields(self, request, obj):
+        """Only the student or a homeroom teacher of the student's class may view these fields."""
+        user = getattr(request, 'user', None)
+        if obj is None or user is None or not user.is_authenticated:
+            return False
+        if obj.profile.user_id == user.pk:
+            return True
+        return Osztaly.objects.filter(
+            tanulok__id=obj.profile.user_id,
+            osztalyfonokok__id=user.pk,
+        ).exists()
+
+    def get_fieldsets(self, request, obj=None):
+        fieldsets = super().get_fieldsets(request, obj)
+        if self.can_view_sensitive_fields(request, obj):
+            return fieldsets
+
+        filtered_fieldsets = []
+        for name, options in fieldsets:
+            options = options.copy()
+            fields = options.get('fields', ())
+            if isinstance(fields, str):
+                fields = (fields,)
+            options['fields'] = tuple(
+                field for field in fields if field not in self.sensitive_fields
+            )
+            if options['fields']:
+                filtered_fieldsets.append((name, options))
+        return filtered_fieldsets
     
     fieldsets = (
         ('Alapadatok', {
@@ -521,18 +553,9 @@ class IgazolasAdmin(admin.ModelAdmin):
         return str(osztaly) if osztaly else '-'
     get_osztaly.short_description = 'Osztály'
     
-    def get_megjegyzes_diak(self, obj):
-        if obj.megjegyzes_diak:
-            # Truncate to 50 chars for table display
-            return obj.megjegyzes_diak[:50] + '...' if len(obj.megjegyzes_diak) > 50 else obj.megjegyzes_diak
-        return '-'
-    get_megjegyzes_diak.short_description = 'Indoklás'
-
     def image_preview(self, obj):
         """
-        Show a permission-aware preview of the attached image.
-        Superusers who are not the submitter student or an osztályfőnök of the student's
-        class see an informational message instead of the image.
+        Show a preview link only for the student or a homeroom teacher of the student's class.
         """
         if not obj.image:
             return '—'
@@ -542,15 +565,7 @@ class IgazolasAdmin(admin.ModelAdmin):
         if admin_user is None:
             return format_html('<span>⚠️ Kép kezelése elérhető, de előnézet nem jeleníthető meg.</span>')
 
-        user = admin_user.user
-        # Is this admin the student who submitted?
-        if obj.profile.user == user:
-            permitted = True
-        else:
-            osztaly = obj.profile.osztalyom()
-            permitted = bool(osztaly and user in osztaly.osztalyfonokok.all())
-
-        if not permitted:
+        if not self.can_view_sensitive_fields(admin_user, obj):
             return format_html(
                 '<span style="color:#c0392b;">⛔ Nincs jogosultságod a kép megtekintéséhez '
                 '(csak a diák és az osztályfőnök láthatja).</span>'

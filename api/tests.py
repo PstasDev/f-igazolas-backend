@@ -1,14 +1,91 @@
 import base64
 import hashlib
-from datetime import datetime
-from urllib.parse import parse_qs, urlparse
-from unittest.mock import Mock, patch
-
-from django.contrib.auth.models import User
+from datetime import datetime, timedelta
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from .models import Igazolas, IgazolasTipus, Profile, SSOIdentity, SSOLoginFlow, SSOLoginTicket
+from django.test import RequestFactory, TestCase, override_settings
+from django.utils import timezone
+
+from .admin import IgazolasAdmin
+from .models import (
+    Igazolas,
+    IgazolasTipus,
+    Osztaly,
+    Profile,
+    SSOIdentity,
+    SSOLoginFlow,
+    SSOLoginTicket,
+)
+
+
+class IgazolasAdminPrivacyTests(TestCase):
+    def setUp(self):
+        self.student = User.objects.create_user(
+            username='student', password='password', is_staff=True
+        )
+        self.profile = Profile.objects.create(user=self.student)
+        self.teacher = User.objects.create_user(
+            username='teacher', password='password', is_staff=True
+        )
+        self.other_teacher = User.objects.create_user(
+            username='other-teacher', password='password', is_staff=True
+        )
+        self.unrelated_admin = User.objects.create_superuser(
+            username='unrelated-admin', email='admin@example.test', password='password'
+        )
+
+        self.school_class = Osztaly.objects.create(tagozat='A', kezdes_eve=2024)
+        self.school_class.tanulok.add(self.student)
+        self.school_class.osztalyfonokok.add(self.teacher)
+
+        reason_type = IgazolasTipus.objects.create(nev='Orvosi igazolás')
+        now = timezone.now()
+        self.igazolas = Igazolas.objects.create(
+            profile=self.profile,
+            eleje=now,
+            vege=now + timedelta(hours=1),
+            tipus=reason_type,
+            megjegyzes_diak='Szenzitív indoklás',
+        )
+        self.model_admin = IgazolasAdmin(Igazolas, admin.site)
+        self.request_factory = RequestFactory()
+
+    def get_field_names(self, user, obj=None):
+        request = self.request_factory.get('/admin/api/igazolas/')
+        request.user = user
+        return {
+            field
+            for _, options in self.model_admin.get_fieldsets(request, obj)
+            for field in options['fields']
+        }
+
+    def test_sensitive_fields_are_visible_to_student_and_homeroom_teacher(self):
+        sensitive_fields = self.model_admin.sensitive_fields
+
+        self.assertTrue(sensitive_fields.issubset(self.get_field_names(self.student, self.igazolas)))
+        self.assertTrue(sensitive_fields.issubset(self.get_field_names(self.teacher, self.igazolas)))
+
+    def test_sensitive_fields_are_hidden_from_other_admins_including_superusers(self):
+        sensitive_fields = self.model_admin.sensitive_fields
+
+        self.assertTrue(sensitive_fields.isdisjoint(
+            self.get_field_names(self.other_teacher, self.igazolas)
+        ))
+        self.assertTrue(sensitive_fields.isdisjoint(
+            self.get_field_names(self.unrelated_admin, self.igazolas)
+        ))
+
+    def test_sensitive_fields_are_not_shown_on_add_or_in_list_search(self):
+        sensitive_fields = self.model_admin.sensitive_fields
+        request = self.request_factory.get('/admin/api/igazolas/')
+        request.user = self.unrelated_admin
+
+        self.assertTrue(sensitive_fields.isdisjoint(self.get_field_names(self.unrelated_admin)))
+        self.assertNotIn('get_megjegyzes_diak', self.model_admin.get_list_display(request))
+        self.assertNotIn('megjegyzes_diak', self.model_admin.get_search_fields(request))
+>>>>>>> Stashed changes
 
 
 @override_settings(
