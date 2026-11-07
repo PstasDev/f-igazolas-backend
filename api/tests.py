@@ -1,10 +1,11 @@
 import base64
 import hashlib
 from datetime import datetime, timedelta
-from django.test import TestCase, override_settings
-from django.utils import timezone
+from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlparse
 
-from .models import Igazolas, IgazolasTipus, Profile, SSOIdentity, SSOLoginFlow, SSOLoginTicket
+from django.contrib import admin
+from django.contrib.auth.models import User
 from django.test import RequestFactory, TestCase, override_settings
 from django.utils import timezone
 
@@ -85,7 +86,6 @@ class IgazolasAdminPrivacyTests(TestCase):
         self.assertTrue(sensitive_fields.isdisjoint(self.get_field_names(self.unrelated_admin)))
         self.assertNotIn('get_megjegyzes_diak', self.model_admin.get_list_display(request))
         self.assertNotIn('megjegyzes_diak', self.model_admin.get_search_fields(request))
->>>>>>> Stashed changes
 
 
 @override_settings(
