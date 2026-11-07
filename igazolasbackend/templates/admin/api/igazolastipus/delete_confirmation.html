@@ -1,0 +1,60 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block bodyclass %}{{ block.super }} app-{{ opts.app_label }} model-{{ opts.model_name }} delete-confirmation{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+  &rsaquo; <a href="{% url opts|admin_urlname:'changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+  &rsaquo; <a href="{% url opts|admin_urlname:'change' object.pk|admin_urlquote %}">{{ object|truncatewords:"18" }}</a>
+  &rsaquo; {% translate 'Delete' %}
+</div>
+{% endblock %}
+
+{% block content %}
+{% if perms_lacking %}
+  <p>{% translate "You do not have permission to delete this item." %}</p>
+{% elif protected %}
+  <p>{% translate "This item cannot be deleted." %}</p>
+{% else %}
+  <p>Biztosan törlöd a(z) {{ object_name }} típust: <strong>{{ object }}</strong>?</p>
+
+  {% if linked_igazolas_count %}
+    <p>
+      {{ linked_igazolas_count }} igazolás tartozik ehhez a típushoz. Ezek nem törlődnek;
+      a kiválasztott típusra lesznek átállítva.
+    </p>
+  {% else %}
+    <p>Nincs ehhez a típushoz kapcsolt igazolás.</p>
+  {% endif %}
+
+  {% if linked_igazolas_count and not replacement_types %}
+    <p class="errornote">Nincs másik igazolástípus, amelyre az igazolásokat át lehetne állítani. Előbb hozz létre egy típust.</p>
+    <a href="{% url opts|admin_urlname:'changelist' %}" class="button">Vissza</a>
+  {% else %}
+    <form method="post">{% csrf_token %}
+      {% if linked_igazolas_count %}
+        <div class="form-row">
+          <label for="id_replacement_type">Kapcsolt igazolások új típusa</label>
+          <select name="replacement_type" id="id_replacement_type" required>
+            {% for replacement in replacement_types %}
+              <option value="{{ replacement.pk }}"{% if replacement.pk == default_replacement_type_id %} selected{% endif %}>
+                {{ replacement.nev }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+      {% endif %}
+      <div>
+        <input type="hidden" name="post" value="yes">
+        {% if is_popup %}<input type="hidden" name="{{ is_popup_var }}" value="1">{% endif %}
+        {% if to_field %}<input type="hidden" name="{{ to_field_var }}" value="{{ to_field }}">{% endif %}
+        <input type="submit" value="Típus törlése és igazolások átállítása">
+        <a href="{% url opts|admin_urlname:'changelist' %}" class="button cancel-link">Mégse</a>
+      </div>
+    </form>
+  {% endif %}
+{% endif %}
+{% endblock %}

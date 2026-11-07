@@ -3,6 +3,7 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from django_ratelimit.decorators import ratelimit
 from django.views.decorators.csrf import csrf_exempt
@@ -56,6 +57,7 @@ from .schemas import (
     PermissionMatrixResponse, UpdatePermissionRequest, UpdatePermissionResponse,
     BulkUpdatePermissionsRequest, BulkUpdatePermissionsResponse,
     AssignClassesRequest, TeacherClassesResponse,
+    FrontendIgazolasTipusImportRequest,
     IgazolasUndoResponse,
     ChangeNoteSchema, ChangeNoteCreateRequest, ChangeNoteUpdateRequest,
     ChangeNoteImageUploadResponse
@@ -306,12 +308,43 @@ def bkk_disruption_history(request, date: str):
 # Helper functions
 def is_class_teacher(user: User) -> bool:
     """Check if user is a class teacher (osztályfőnök)"""
-    return Osztaly.objects.filter(osztalyfonokok=user).exists()
+    return Osztaly.objects.filter(osztalyfonokok=user, archived=False).exists()
 
 
-def get_teacher_class(user: User) -> Osztaly:
-    """Get the class for which the user is a teacher"""
-    return Osztaly.objects.filter(osztalyfonokok=user).first()
+def get_teacher_class(user: User, class_id: Optional[int] = None) -> Optional[Osztaly]:
+    """Get one active class assigned to a teacher, optionally by ID."""
+    classes = Osztaly.objects.filter(osztalyfonokok=user, archived=False)
+    if class_id is not None:
+        return classes.filter(id=class_id).first()
+    return classes.order_by('-kezdes_eve', 'tagozat').first()
+
+
+def get_assigned_teacher_classes(user: User):
+    """Return all active classes assigned to a teacher."""
+    return Osztaly.objects.filter(
+        osztalyfonokok=user,
+        archived=False,
+    ).order_by('-kezdes_eve', 'tagozat')
+
+
+def user_can_access_class(user: User, osztaly: Osztaly) -> bool:
+    """Class data is visible to its students, assigned teachers, and admins."""
+    if osztaly.archived and not user.is_superuser:
+        return False
+    return bool(
+        user.is_superuser
+        or osztaly.osztalyfonokok.filter(id=user.id).exists()
+        or osztaly.tanulok.filter(id=user.id).exists()
+    )
+
+
+def is_igazolas_tipus_allowed_for_class(tipus: IgazolasTipus, osztaly: Optional[Osztaly]) -> bool:
+    """Check both a type's tagozat scope and the class permission matrix."""
+    if osztaly is None:
+        return False
+    if tipus.available_tagozat and tipus.available_tagozat != osztaly.tagozat:
+        return False
+    return not osztaly.nem_fogadott_igazolas_tipusok.filter(id=tipus.id).exists()
 
 
 # Authentication Endpoints
@@ -365,8 +398,17 @@ def login(request, data: LoginRequest):
 
 @api.get("/profiles", response={200: List[ProfileSchema], 401: ErrorResponse}, auth=jwt_auth, tags=["Profile"])
 def list_profiles(request):
-    """Get all profiles (requires authentication)"""
-    profiles = Profile.objects.all()
+    """Return only profiles visible to this user."""
+    if request.auth.is_superuser:
+        profiles = Profile.objects.all()
+    else:
+        teacher_classes = get_assigned_teacher_classes(request.auth)
+        if teacher_classes.exists():
+            profiles = Profile.objects.filter(
+                user__osztaly__in=teacher_classes,
+            ).distinct()
+        else:
+            profiles = Profile.objects.filter(user=request.auth)
     result = []
     
     for profile in profiles:
@@ -385,7 +427,8 @@ def list_profiles(request):
                 'tagozat': osztaly.tagozat,
                 'kezdes_eve': osztaly.kezdes_eve,
                 'nev': str(osztaly)
-            } if osztaly else None
+            } if osztaly else None,
+            'is_studios': profile.is_studios,
         }
         result.append(profile_data)
     
@@ -401,7 +444,11 @@ def get_my_profile(request):
         
         # Check if user exists in FTV system by email
         ftv_registered = False
-        if request.auth.email:
+        has_f_class = bool(
+            (osztaly and osztaly.tagozat == 'F')
+            or profile.osztalyaim().filter(tagozat='F').exists()
+        )
+        if request.auth.email and has_f_class:
             try:
                 from .ftv_sync import fetch_ftv_profile_by_email
                 ftv_profile = fetch_ftv_profile_by_email(request.auth.email)
@@ -426,6 +473,16 @@ def get_my_profile(request):
                 'kezdes_eve': osztaly.kezdes_eve,
                 'nev': str(osztaly)
             } if osztaly else None,
+            'osztalyaim': [
+                {
+                    'id': assigned_class.id,
+                    'tagozat': assigned_class.tagozat,
+                    'kezdes_eve': assigned_class.kezdes_eve,
+                    'nev': str(assigned_class),
+                }
+                for assigned_class in profile.osztalyaim()
+            ],
+            'is_studios': profile.is_studios,
             'ftv_registered': ftv_registered
     }
     except Profile.DoesNotExist:
@@ -463,8 +520,19 @@ def update_my_frontend_config(request, data: dict = Body(...)):
 
 @api.get("/profiles/{profile_id}", response={200: ProfileSchema, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Profile"])
 def get_profile(request, profile_id: int):
-    """Get profile by ID (requires authentication)"""
+    """Get own profile or a profile belonging to one of the teacher's classes."""
     profile = get_object_or_404(Profile, id=profile_id)
+    if (
+        not request.auth.is_superuser
+        and profile.user_id != request.auth.id
+        and not Osztaly.objects.filter(
+            osztalyfonokok=request.auth,
+            tanulok=profile.user,
+            archived=False,
+        ).exists()
+    ):
+        return 404, {'error': 'Not found', 'detail': 'Profile not found'}
+
     osztaly = profile.osztalyom()
     
     return 200, {
@@ -481,7 +549,8 @@ def get_profile(request, profile_id: int):
             'tagozat': osztaly.tagozat,
             'kezdes_eve': osztaly.kezdes_eve,
             'nev': str(osztaly)
-        } if osztaly else None
+        } if osztaly else None,
+        'is_studios': profile.is_studios,
     }
 
 
@@ -489,11 +558,24 @@ def get_profile(request, profile_id: int):
 
 @api.get("/osztaly", response={200: List[OsztalySchema], 401: ErrorResponse}, auth=jwt_auth, tags=["Osztaly"])
 def list_osztaly(request):
-    """Get all non-archived classes (requires authentication)"""
-    osztalyok = Osztaly.objects.filter(archived=False).prefetch_related('nem_fogadott_igazolas_tipusok')
+    """List classes the current user is allowed to see."""
+    if request.auth.is_superuser:
+        osztalyok = Osztaly.objects.filter(archived=False)
+    else:
+        teacher_class_ids = get_assigned_teacher_classes(request.auth).values_list('id', flat=True)
+        student_class_ids = Osztaly.objects.filter(
+            tanulok=request.auth,
+            archived=False,
+        ).values_list('id', flat=True)
+        osztalyok = Osztaly.objects.filter(
+            id__in=set(teacher_class_ids) | set(student_class_ids),
+            archived=False,
+        )
+    osztalyok = osztalyok.prefetch_related('nem_fogadott_igazolas_tipusok')
     result = []
     
     for osztaly in osztalyok:
+        can_view_roster = request.auth.is_superuser or osztaly.osztalyfonokok.filter(id=request.auth.id).exists()
         osztaly_data = {
             'id': osztaly.id,
             'tagozat': osztaly.tagozat,
@@ -507,7 +589,7 @@ def list_osztaly(request):
                     'last_name': tanulo.last_name,
                     'email': tanulo.email
                 } for tanulo in osztaly.tanulok.all()
-            ],
+            ] if can_view_roster else [],
             'osztalyfonokok': [
                 {
                     'id': of.id,
@@ -516,7 +598,7 @@ def list_osztaly(request):
                     'last_name': of.last_name,
                     'email': of.email
                 } for of in osztaly.osztalyfonokok.all()
-            ],
+            ] if can_view_roster else [],
             'nem_fogadott_igazolas_tipusok': [
                 {
                     'id': tipus.id,
@@ -531,7 +613,8 @@ def list_osztaly(request):
                     'sub_form_schema': tipus.sub_form_schema,
                     'display_order': tipus.display_order,
                     'supports_group_absence': tipus.supports_group_absence,
-                    'requires_studios': tipus.requires_studios
+                    'requires_studios': tipus.requires_studios,
+                    'available_tagozat': tipus.available_tagozat,
                 } for tipus in osztaly.nem_fogadott_igazolas_tipusok.all()
             ]
         }
@@ -542,8 +625,11 @@ def list_osztaly(request):
 
 @api.get("/osztaly/{osztaly_id}", response={200: OsztalySchema, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Osztaly"])
 def get_osztaly(request, osztaly_id: int):
-    """Get class by ID (requires authentication)"""
+    """Get a class only if the caller is assigned to it or is a superuser."""
     osztaly = get_object_or_404(Osztaly.objects.prefetch_related('nem_fogadott_igazolas_tipusok'), id=osztaly_id)
+    if not user_can_access_class(request.auth, osztaly):
+        return 404, {'error': 'Not found', 'detail': 'Class not found'}
+    can_view_roster = request.auth.is_superuser or osztaly.osztalyfonokok.filter(id=request.auth.id).exists()
     
     return 200, {
         'id': osztaly.id,
@@ -558,7 +644,7 @@ def get_osztaly(request, osztaly_id: int):
                 'last_name': tanulo.last_name,
                 'email': tanulo.email
             } for tanulo in osztaly.tanulok.all()
-        ],
+        ] if can_view_roster else [],
         'osztalyfonokok': [
             {
                 'id': of.id,
@@ -567,7 +653,7 @@ def get_osztaly(request, osztaly_id: int):
                 'last_name': of.last_name,
                 'email': of.email
             } for of in osztaly.osztalyfonokok.all()
-        ],
+        ] if can_view_roster else [],
         'nem_fogadott_igazolas_tipusok': [
             {
                 'id': tipus.id,
@@ -582,7 +668,8 @@ def get_osztaly(request, osztaly_id: int):
                 'sub_form_schema': tipus.sub_form_schema,
                 'display_order': tipus.display_order,
                 'supports_group_absence': tipus.supports_group_absence,
-                'requires_studios': tipus.requires_studios
+                'requires_studios': tipus.requires_studios,
+                'available_tagozat': tipus.available_tagozat,
             } for tipus in osztaly.nem_fogadott_igazolas_tipusok.all()
         ]
     }
@@ -592,8 +679,17 @@ def get_osztaly(request, osztaly_id: int):
 
 @api.get("/mulasztas", response={200: List[MulasztasSchema], 401: ErrorResponse}, auth=jwt_auth, tags=["Mulasztas"])
 def list_mulasztas(request):
-    """Get all absences (requires authentication)"""
-    mulasztasok = Mulasztas.objects.all()
+    """Get only the current user's or assigned classes' absence records."""
+    if request.auth.is_superuser:
+        mulasztasok = Mulasztas.objects.all()
+    else:
+        teacher_classes = get_assigned_teacher_classes(request.auth)
+        student_ids = User.objects.filter(osztaly__in=teacher_classes).values_list('id', flat=True)
+        mulasztasok = Mulasztas.objects.filter(
+            Q(uploaded_by_student=request.auth)
+            | Q(uploaded_by_student_id__in=student_ids)
+            | Q(matched_igazolas__profile__user_id__in=student_ids)
+        ).distinct()
     return 200, list(mulasztasok)
 
 
@@ -832,8 +928,28 @@ def delete_my_mulasztas(request):
 
 @api.get("/mulasztas/{mulasztas_id}", response={200: MulasztasSchema, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Mulasztas"])
 def get_mulasztas(request, mulasztas_id: int):
-    """Get absence by ID (requires authentication)"""
+    """Get an absence only if the caller owns it or teaches its class."""
     mulasztas = get_object_or_404(Mulasztas, id=mulasztas_id)
+    if not request.auth.is_superuser:
+        owner_id = mulasztas.uploaded_by_student_id
+        teacher_can_access = False
+        if owner_id:
+            teacher_can_access = Osztaly.objects.filter(
+                osztalyfonokok=request.auth,
+                tanulok__id=owner_id,
+                archived=False,
+            ).exists()
+        if mulasztas.uploaded_by_student_id != request.auth.id and not teacher_can_access:
+            matched_user_id = mulasztas.matched_igazolas.profile.user_id if mulasztas.matched_igazolas_id else None
+            if matched_user_id != request.auth.id and not (
+                matched_user_id
+                and Osztaly.objects.filter(
+                    osztalyfonokok=request.auth,
+                    tanulok__id=matched_user_id,
+                    archived=False,
+                ).exists()
+            ):
+                return 404, {'error': 'Not found', 'detail': 'Absence not found'}
     return 200, mulasztas
 
 
@@ -869,11 +985,67 @@ def list_igazolas_tipus(request):
             'sub_form_schema': tipus.sub_form_schema,
             'display_order': tipus.display_order,
             'supports_group_absence': tipus.supports_group_absence,
-            'requires_studios': tipus.requires_studios
+            'requires_studios': tipus.requires_studios,
+            'available_tagozat': tipus.available_tagozat,
         }
         result.append(tipus_data)
     
     return 200, result
+
+
+@api.post(
+    "/admin/igazolas-types/import-frontend",
+    response={200: dict, 201: dict, 400: ErrorResponse, 403: ErrorResponse},
+    auth=jwt_auth,
+    tags=["Admin - Permissions"],
+)
+def import_frontend_igazolas_type(request, data: FrontendIgazolasTipusImportRequest):
+    """Create one backend type from the frontend's supported-type catalog."""
+    if not request.auth.is_superuser:
+        return 403, {'error': 'Forbidden', 'detail': 'Only superusers can import igazolás types'}
+
+    nev = data.nev.strip()
+    if not nev or len(nev) > 100:
+        return 400, {'error': 'Invalid input', 'detail': 'A type name of 1-100 characters is required'}
+
+    category_choices = dict(IgazolasTipus._meta.get_field('category').choices)
+    if data.category not in category_choices:
+        return 400, {'error': 'Invalid input', 'detail': 'Unknown igazolás type category'}
+
+    available_tagozat = data.available_tagozat.strip().upper() if data.available_tagozat and data.available_tagozat.strip() else None
+    if available_tagozat and (len(available_tagozat) != 1 or not available_tagozat.isalpha()):
+        return 400, {'error': 'Invalid input', 'detail': 'available_tagozat must be a single letter'}
+
+    existing = IgazolasTipus.objects.filter(nev__iexact=nev).first()
+    if existing:
+        return 200, {
+            'created': False,
+            'id': existing.id,
+            'nev': existing.nev,
+            'message': 'This type already exists in the backend',
+        }
+
+    tipus = IgazolasTipus.objects.create(
+        nev=nev,
+        leiras=data.leiras,
+        beleszamit=data.beleszamit,
+        iskolaerdeku=data.iskolaerdeku,
+        category=data.category,
+        category_emoji=data.category_emoji,
+        has_sub_form=data.has_sub_form,
+        sub_form_schema=data.sub_form_schema,
+        display_order=data.display_order,
+        supports_group_absence=data.supports_group_absence,
+        requires_studios=data.requires_studios,
+        available_tagozat=available_tagozat,
+    )
+    logger.info("Superuser %s imported frontend igazolás type %s", request.auth.username, nev)
+    return 201, {
+        'created': True,
+        'id': tipus.id,
+        'nev': tipus.nev,
+        'message': 'Type imported successfully',
+    }
 
 
 @api.get("/igazolas-tipus/categorized", response={200: dict, 401: ErrorResponse}, auth=jwt_auth, tags=["IgazolasTipus"])
@@ -890,7 +1062,14 @@ def get_categorized_igazolas_types(request):
     # Get all types, excluding those disabled for this class
     all_types = IgazolasTipus.objects.all()
     if osztaly:
-        all_types = all_types.exclude(nem_fogado_osztalyok=osztaly)
+        all_types = all_types.exclude(nem_fogado_osztalyok=osztaly).filter(
+            Q(available_tagozat__isnull=True)
+            | Q(available_tagozat=osztaly.tagozat)
+        )
+        if not profile.is_studios:
+            all_types = all_types.filter(requires_studios=False)
+    elif not request.auth.is_superuser:
+        all_types = all_types.none()
     
     # Group by category
     categories = {}
@@ -916,6 +1095,7 @@ def get_categorized_igazolas_types(request):
             'display_order': tipus.display_order,
             'category': tipus.category,
             'category_emoji': tipus.category_emoji,
+            'available_tagozat': tipus.available_tagozat,
         })
     
     # Sort categories and types within
@@ -994,7 +1174,8 @@ def get_most_used_igazolas_tipus(request):
             'sub_form_schema': tipus.sub_form_schema,
             'display_order': tipus.display_order,
             'supports_group_absence': tipus.supports_group_absence,
-            'requires_studios': tipus.requires_studios
+            'requires_studios': tipus.requires_studios,
+            'available_tagozat': tipus.available_tagozat,
         }
         result.append(tipus_data)
     
@@ -1029,7 +1210,8 @@ def get_igazolas_tipus(request, tipus_id: int):
         'sub_form_schema': tipus.sub_form_schema,
         'display_order': tipus.display_order,
         'supports_group_absence': tipus.supports_group_absence,
-        'requires_studios': tipus.requires_studios
+        'requires_studios': tipus.requires_studios,
+        'available_tagozat': tipus.available_tagozat,
     }
 
 
@@ -1049,8 +1231,8 @@ def toggle_igazolas_tipus_for_osztaly(request, data: ToggleIgazolasTipusRequest)
             'detail': 'Only class teachers (ofő) can modify igazolas tipus settings'
         }
     
-    # Get the teacher's class
-    teacher_class = get_teacher_class(request.auth)
+    # Use the selected class when provided; otherwise retain the single-class default.
+    teacher_class = get_teacher_class(request.auth, data.osztaly_id)
     if not teacher_class:
         return 403, {
             'error': 'Forbidden',
@@ -1064,6 +1246,12 @@ def toggle_igazolas_tipus_for_osztaly(request, data: ToggleIgazolasTipusRequest)
         return 404, {
             'error': 'Not found',
             'detail': f'IgazolasTipus with id {data.tipus_id} does not exist'
+        }
+
+    if data.enabled and tipus.available_tagozat and tipus.available_tagozat != teacher_class.tagozat:
+        return 400, {
+            'error': 'Invalid permission',
+            'detail': f'{tipus.nev} is only available to {tipus.available_tagozat}-section classes',
         }
     
     # Toggle the tipus
@@ -1088,8 +1276,8 @@ def toggle_igazolas_tipus_for_osztaly(request, data: ToggleIgazolasTipusRequest)
 
 # Igazolas Endpoints
 
-@api.get("/igazolas", response={200: List[IgazolasSchema], 401: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
-def list_igazolas(request, mode: str = "live", debug_performance: str = "false"):
+@api.get("/igazolas", response={200: List[IgazolasSchema], 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
+def list_igazolas(request, mode: str = "live", debug_performance: str = "false", class_id: Optional[int] = None):
     """
     Get all justifications (requires authentication).
     
@@ -1114,52 +1302,39 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
     # Determine if we should print performance (dev mode only)
     should_print_perf = debug_perf and settings.DEBUG
     
-    # Get teacher's class
-    print(f"👨‍🏫 Checking teacher profile and class...")
-    teacher_profile = Profile.objects.filter(user=request.auth).first()
-    if not teacher_profile:
-        print(f"   ✗ ERROR: No profile found for user\n")
-        return 401, {
-            'error': 'Unauthorized',
-            'detail': 'No profile found for user'
-        }
+    # Teachers can select any class assigned to them. Without a selection,
+    # preserve the combined inbox across all their active classes.
+    teacher_classes = get_assigned_teacher_classes(request.auth)
+    if not teacher_classes.exists():
+        return 403, {'error': 'Forbidden', 'detail': 'Only class teachers can view class igazolások'}
+
+    if class_id is not None:
+        selected_class = teacher_classes.filter(id=class_id).first()
+        if not selected_class:
+            return 403, {'error': 'Forbidden', 'detail': 'You are not assigned to this class'}
+        classes_to_view = [selected_class]
+    else:
+        classes_to_view = list(teacher_classes)
+
+    teacher_class = classes_to_view[0]
+    print(f"👨‍🏫 Classes in view: {[str(osztaly) for osztaly in classes_to_view]}\n")
     
-    print(f"   ✓ Profile found: ID={teacher_profile.id}")
-    teacher_class = teacher_profile.osztalyom()
-    if not teacher_class:
-        print(f"   ✗ ERROR: No class found for this teacher\n")
-        return 401, {
-            'error': 'Unauthorized',
-            'detail': 'No class found for this teacher'
-        }
-    
-    print(f"   ✓ Teacher's class: {teacher_class} (ID: {teacher_class.id})\n")
-    
-    # Sync with FTV only if mode is 'live'
+    # FTV is only connected to F-section classes. Other classes remain cached.
     sync_result = None
     if mode == "live":
-        print(f"🔄 MODE=LIVE: Triggering FTV sync...")
-        try:
-            logger.info(f"User {request.auth.username} requested /igazolas - triggering class-specific FTV sync")
-            sync_result = sync_class_absences_from_ftv(teacher_class, debug_performance=debug_perf)
-            print(f"✅ FTV Sync completed successfully")
-            print(f"   Stats: {sync_result.get('statistics')}\n")
-            logger.info(f"FTV sync completed: {sync_result.get('statistics')}")
-            
-            # Print performance details in dev mode
-            if should_print_perf and sync_result.get('ftv_performance'):
-                print(f"📊 Performance Details: {sync_result['ftv_performance']}\n")
-                logger.info(f"FTV Performance Details: {sync_result['ftv_performance']}")
-        except FTVSyncError as e:
-            print(f"❌ FTV sync failed: {str(e)}")
-            print(f"   → Continuing with existing data\n")
-            logger.error(f"FTV sync failed but continuing with existing data: {str(e)}")
-        except Exception as e:
-            print(f"❌ Unexpected error during FTV sync: {str(e)}")
-            print(f"   → Continuing with existing data\n")
-            import traceback
-            traceback.print_exc()
-            logger.error(f"Unexpected error during FTV sync: {str(e)}")
+        ftv_classes = [osztaly for osztaly in classes_to_view if osztaly.tagozat == 'F']
+        if ftv_classes:
+            print(f"🔄 MODE=LIVE: Syncing FTV classes {[str(osztaly) for osztaly in ftv_classes]}...")
+        for ftv_class in ftv_classes:
+            try:
+                logger.info("User %s requested /igazolas - syncing FTV class %s", request.auth.username, ftv_class)
+                sync_result = sync_class_absences_from_ftv(ftv_class, debug_performance=debug_perf)
+                if should_print_perf and sync_result.get('ftv_performance'):
+                    logger.info("FTV Performance Details: %s", sync_result['ftv_performance'])
+            except FTVSyncError as e:
+                logger.error("FTV sync failed for class %s; continuing with existing data: %s", ftv_class, e)
+            except Exception as e:
+                logger.exception("Unexpected FTV sync error for class %s: %s", ftv_class, e)
     else:
         print(f"💾 MODE=CACHED: Skipping FTV sync\n")
         logger.info(f"User {request.auth.username} requested /igazolas in cached mode - skipping FTV sync")
@@ -1169,8 +1344,12 @@ def list_igazolas(request, mode: str = "live", debug_performance: str = "false")
     print(f"💾 Cache metadata: {cache_metadata}\n")
     logger.info(f"Cache metadata: {cache_metadata}")
     
-    # Fetch igazolások for the teacher's class
-    igazolasok = teacher_profile.osztalyom_igazolasai().select_related('profile', 'tipus').prefetch_related('mulasztasok')
+    # Filter records to the selected class (or all classes assigned to this teacher).
+    igazolasok = Igazolas.objects.filter(
+        profile__user__osztaly__in=classes_to_view,
+        archived=False,
+        undoed=False,
+    ).select_related('profile', 'tipus').prefetch_related('mulasztasok').distinct()
     result = []
     
     for igazolas in igazolasok:
@@ -1373,10 +1552,20 @@ def get_my_igazolas(request, mode: str = "live", debug_performance: str = "false
         }
 
 
-@api.get("/igazolas/{igazolas_id}", response={200: IgazolasSchema, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
+@api.get("/igazolas/{igazolas_id}", response={200: IgazolasSchema, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Igazolas"])
 def get_igazolas(request, igazolas_id: int):
-    """Get justification by ID (requires authentication)"""
+    """Get a justification only for its owner, assigned class teachers, or admins."""
     igazolas = get_object_or_404(Igazolas.objects.select_related('profile', 'tipus').prefetch_related('mulasztasok'), id=igazolas_id)
+    if (
+        not request.auth.is_superuser
+        and igazolas.profile.user_id != request.auth.id
+        and not Osztaly.objects.filter(
+            osztalyfonokok=request.auth,
+            tanulok=igazolas.profile.user,
+            archived=False,
+        ).exists()
+    ):
+        return 404, {'error': 'Not found', 'detail': 'Igazolás not found'}
     osztaly = igazolas.profile.osztalyom()
     
     return 200, {
@@ -1448,6 +1637,18 @@ def create_igazolas(request, data: IgazolasCreateRequest):
         return 404, {
             'error': 'Not found',
             'detail': f'IgazolasTipus with id {data.tipus} does not exist'
+        }
+
+    student_class = profile.osztalyom()
+    if not is_igazolas_tipus_allowed_for_class(tipus, student_class):
+        return 400, {
+            'error': 'Invalid type',
+            'detail': 'This igazolás type is not available to your class',
+        }
+    if tipus.requires_studios and not profile.is_studios:
+        return 400, {
+            'error': 'Permission denied',
+            'detail': 'This igazolás type requires stúdiós status',
         }
     
     # Create the igazolas
@@ -1731,12 +1932,25 @@ def edit_igazolas(request, igazolas_id: int, data: IgazolasEditRequest):
 
     if data.tipus is not None:
         try:
-            igazolas.tipus = IgazolasTipus.objects.get(id=data.tipus)
+            updated_tipus = IgazolasTipus.objects.get(id=data.tipus)
         except IgazolasTipus.DoesNotExist:
             return 404, {
                 'error': 'Not found',
                 'detail': f'IgazolasTipus with id {data.tipus} does not exist'
             }
+        igazolas.tipus = updated_tipus
+
+    student_class = profile.osztalyom()
+    if not is_igazolas_tipus_allowed_for_class(igazolas.tipus, student_class):
+        return 400, {
+            'error': 'Invalid type',
+            'detail': 'This igazolás type is not available to your class',
+        }
+    if igazolas.tipus.requires_studios and not profile.is_studios:
+        return 400, {
+            'error': 'Permission denied',
+            'detail': 'This igazolás type requires stúdiós status',
+        }
 
     new_eleje = data.eleje if data.eleje is not None else igazolas.eleje
     new_vege = data.vege if data.vege is not None else igazolas.vege
@@ -2165,7 +2379,7 @@ def change_password_otp(request, data: ChangePasswordOTPRequest):
 # Diakjaim Endpoints (Ofő only)
 
 @api.get("/diakjaim", response={200: List[DiakjaSignleSchema], 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Diakjaim"])
-def get_diakjaim(request):
+def get_diakjaim(request, class_id: Optional[int] = None):
     """
     Get students from the teacher's class with their igazolások records.
     
@@ -2178,16 +2392,25 @@ def get_diakjaim(request):
             'detail': 'Only class teachers (ofő) can access this endpoint'
         }
     
-    # Get the teacher's class
-    teacher_class = get_teacher_class(request.auth)
-    if not teacher_class:
+    teacher_classes = get_assigned_teacher_classes(request.auth)
+    if class_id is not None:
+        teacher_class = teacher_classes.filter(id=class_id).first()
+        if not teacher_class:
+            return 403, {'error': 'Forbidden', 'detail': 'You are not assigned to this class'}
+        classes_to_view = [teacher_class]
+    else:
+        classes_to_view = list(teacher_classes)
+
+    if not classes_to_view:
         return 403, {
             'error': 'Forbidden',
             'detail': 'No class found for this teacher'
         }
     
-    # Get all students in the class (prefetch to ensure fresh data)
-    students = teacher_class.tanulok.all().order_by('last_name', 'first_name')
+    student_ids = set()
+    for osztaly in classes_to_view:
+        student_ids.update(osztaly.tanulok.values_list('id', flat=True))
+    students = User.objects.filter(id__in=student_ids).order_by('last_name', 'first_name')
     result = []
     
     for student in students:
@@ -2218,7 +2441,8 @@ def get_diakjaim(request):
                     'has_sub_form': igazolas.tipus.has_sub_form,
                     'display_order': igazolas.tipus.display_order,
                     'supports_group_absence': igazolas.tipus.supports_group_absence,
-                    'requires_studios': igazolas.tipus.requires_studios
+                    'requires_studios': igazolas.tipus.requires_studios,
+                    'available_tagozat': igazolas.tipus.available_tagozat,
                 },
                 'allapot': igazolas.allapot,
                 'rogzites_datuma': igazolas.rogzites_datuma,
@@ -2242,7 +2466,7 @@ def get_diakjaim(request):
 
 
 @api.post("/diakjaim", response={201: DiakjaCreateResponse, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Diakjaim"])
-def create_diakjaim(request, data: List[DiakjaCreateRequest]):
+def create_diakjaim(request, data: List[DiakjaCreateRequest], class_id: Optional[int] = None):
     """
     Create multiple students and assign them to the teacher's class.
     
@@ -2256,8 +2480,8 @@ def create_diakjaim(request, data: List[DiakjaCreateRequest]):
             'detail': 'Only class teachers (ofő) can access this endpoint'
         }
     
-    # Get the teacher's class
-    teacher_class = get_teacher_class(request.auth)
+    # A teacher adding students must choose an assigned target class.
+    teacher_class = get_teacher_class(request.auth, class_id)
     if not teacher_class:
         return 403, {
             'error': 'Forbidden',
@@ -2338,6 +2562,19 @@ def check_ftv_registration(request):
             'email': None,
             'message': 'User has no email address - cannot check FTV registration'
         }
+
+    profile = Profile.objects.filter(user=request.auth).first()
+    current_class = profile.osztalyom() if profile else None
+    has_f_class = bool(
+        (current_class and current_class.tagozat == 'F')
+        or (profile and profile.osztalyaim().filter(tagozat='F').exists())
+    )
+    if not has_f_class:
+        return 200, {
+            'ftv_registered': False,
+            'email': request.auth.email,
+            'message': 'FTV integration is only available to F-section classes',
+        }
     
     try:
         from .ftv_sync import fetch_ftv_profile_by_email
@@ -2366,8 +2603,8 @@ def check_ftv_registration(request):
         }
 
 
-@api.get("/sync/ftv/metadata", response={200: dict}, auth=jwt_auth, tags=["FTV Sync"])
-def get_ftv_sync_metadata(request, sync_type: str = "base"):
+@api.get("/sync/ftv/metadata", response={200: dict, 403: ErrorResponse}, auth=jwt_auth, tags=["FTV Sync"])
+def get_ftv_sync_metadata(request, sync_type: str = "base", class_id: Optional[int] = None):
     """
     Get FTV sync metadata (last sync time, status, etc.).
     
@@ -2383,9 +2620,21 @@ def get_ftv_sync_metadata(request, sync_type: str = "base"):
     if sync_type == 'user':
         actual_sync_type = f'user_{request.auth.id}'
     elif sync_type == 'class':
-        teacher_profile = Profile.objects.filter(user=request.auth).first()
-        if teacher_profile and teacher_profile.osztalyom():
-            actual_sync_type = f'class_{teacher_profile.osztalyom().id}'
+        if class_id is not None:
+            osztaly = Osztaly.objects.filter(id=class_id, archived=False).first()
+            if not osztaly or (
+                not request.auth.is_superuser
+                and not osztaly.osztalyfonokok.filter(id=request.auth.id).exists()
+            ):
+                return 403, {'error': 'Forbidden', 'detail': 'You are not assigned to this class'}
+        else:
+            osztaly = next((
+                candidate for candidate in get_assigned_teacher_classes(request.auth)
+                if candidate.tagozat == 'F'
+            ), None)
+
+        if osztaly and osztaly.tagozat == 'F':
+            actual_sync_type = f'class_{osztaly.id}'
         else:
             actual_sync_type = 'base'
     else:
@@ -2449,9 +2698,8 @@ def manual_full_ftv_sync(request, debug_performance: str = "false"):
     """
     Manually trigger a full FTV sync (superuser only).
 
-    Syncs base data (classes + students) AND absences for every class, so the
-    result is a complete refresh of all igazolások - used by the admin
-    "FTV Sync" button under Osztályok.
+    Syncs base data (classes + students) AND absences for active F-section
+    classes only - used by the admin "FTV Sync" button under Osztályok.
 
     Args:
         debug_performance: 'true' to fetch and log performance details from FTV backend
@@ -2723,8 +2971,8 @@ def get_active_system_messages(request):
 # Tanév Rendje Endpoints
 # ============================================================================
 
-@api.get("/tanev_rendje", response={200: TanevRendjeSchema, 401: ErrorResponse}, auth=jwt_auth, tags=["Tanév Rendje"])
-def get_tanev_rendje(request, from_date: str = None, to_date: str = None):
+@api.get("/tanev_rendje", response={200: TanevRendjeSchema, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Tanév Rendje"])
+def get_tanev_rendje(request, from_date: str = None, to_date: str = None, class_id: Optional[int] = None):
     """
     Get school year schedule including breaks and overrides (requires authentication).
     
@@ -2740,6 +2988,25 @@ def get_tanev_rendje(request, from_date: str = None, to_date: str = None):
     
     szunetek_query = TanitasiSzunet.objects.all()
     overrides_query = Override.objects.all()
+
+    if class_id is not None:
+        osztaly = Osztaly.objects.filter(id=class_id).first()
+        if not osztaly:
+            return 404, {'error': 'Not found', 'detail': 'Class not found'}
+        if not user_can_access_class(request.auth, osztaly):
+            return 403, {'error': 'Forbidden', 'detail': 'You cannot view this class schedule'}
+        visible_class_ids = [osztaly.id]
+    elif request.auth.is_superuser:
+        visible_class_ids = list(Osztaly.objects.filter(archived=False).values_list('id', flat=True))
+    else:
+        visible_class_ids = set(get_assigned_teacher_classes(request.auth).values_list('id', flat=True))
+        visible_class_ids.update(
+            Osztaly.objects.filter(tanulok=request.auth, archived=False).values_list('id', flat=True)
+        )
+
+    overrides_query = overrides_query.filter(
+        Q(class_id__isnull=True) | Q(class_id__in=visible_class_ids)
+    )
     
     if from_date:
         try:
@@ -2829,19 +3096,18 @@ def create_class_override(request, data: OverrideCreateRequest):
             'detail': 'Only class teachers (ofő) can create class overrides'
         }
     
-    # Get the teacher's class
-    teacher_class = get_teacher_class(request.auth)
+    # Allow teachers to target any class assigned to them.
+    teacher_class = get_teacher_class(request.auth, data.class_id)
     if not teacher_class:
         return 403, {
             'error': 'Forbidden',
             'detail': 'No class found for this teacher'
         }
     
-    # Create override for teacher's class (ignore class_id from request)
     override = Override.objects.create(
         date=data.date,
         is_required=data.is_required,
-        class_id=teacher_class,  # Always use teacher's class
+        class_id=teacher_class,
         reason=data.reason
     )
     
@@ -2872,14 +3138,6 @@ def update_class_override(request, override_id: int, data: OverrideUpdateRequest
             'detail': 'Only class teachers (ofő) can update class overrides'
         }
     
-    # Get the teacher's class
-    teacher_class = get_teacher_class(request.auth)
-    if not teacher_class:
-        return 403, {
-            'error': 'Forbidden',
-            'detail': 'No class found for this teacher'
-        }
-    
     # Get the override
     try:
         override = Override.objects.get(id=override_id)
@@ -2889,8 +3147,8 @@ def update_class_override(request, override_id: int, data: OverrideUpdateRequest
             'detail': f'Override with id {override_id} does not exist'
         }
     
-    # Verify override belongs to teacher's class
-    if override.class_id != teacher_class:
+    # Verify the teacher is assigned to the override's class.
+    if not override.class_id or not override.class_id.osztalyfonokok.filter(id=request.auth.id).exists():
         return 403, {
             'error': 'Forbidden',
             'detail': 'You can only update overrides for your own class'
@@ -2907,7 +3165,7 @@ def update_class_override(request, override_id: int, data: OverrideUpdateRequest
     
     override.save()
     
-    logger.info(f"Teacher {request.auth.username} updated override {override_id} for class {teacher_class}")
+    logger.info(f"Teacher {request.auth.username} updated override {override_id} for class {override.class_id}")
     
     return 200, {
         'id': override.id,
@@ -2934,14 +3192,6 @@ def delete_class_override(request, override_id: int):
             'detail': 'Only class teachers (ofő) can delete class overrides'
         }
     
-    # Get the teacher's class
-    teacher_class = get_teacher_class(request.auth)
-    if not teacher_class:
-        return 403, {
-            'error': 'Forbidden',
-            'detail': 'No class found for this teacher'
-        }
-    
     # Get the override
     try:
         override = Override.objects.get(id=override_id)
@@ -2951,8 +3201,8 @@ def delete_class_override(request, override_id: int):
             'detail': f'Override with id {override_id} does not exist'
         }
     
-    # Verify override belongs to teacher's class
-    if override.class_id != teacher_class:
+    # Verify the teacher is assigned to the override's class.
+    if not override.class_id or not override.class_id.osztalyfonokok.filter(id=request.auth.id).exists():
         return 403, {
             'error': 'Forbidden',
             'detail': 'You can only delete overrides for your own class'
@@ -2960,7 +3210,7 @@ def delete_class_override(request, override_id: int):
     
     override.delete()
     
-    logger.info(f"Teacher {request.auth.username} deleted override {override_id} for class {teacher_class}")
+    logger.info(f"Teacher {request.auth.username} deleted override {override_id} for class {override.class_id}")
     
     return 200, {
         'message': f'Override {override_id} deleted successfully',
@@ -4820,7 +5070,17 @@ def get_group_enabled_types(request):
     
     Requires authentication.
     """
+    profile = Profile.objects.filter(user=request.auth).first()
+    osztaly = profile.osztalyom() if profile else None
     types = IgazolasTipus.objects.filter(supports_group_absence=True)
+    if osztaly:
+        types = types.filter(Q(available_tagozat__isnull=True) | Q(available_tagozat=osztaly.tagozat)).exclude(
+            nem_fogado_osztalyok=osztaly,
+        )
+        if not profile.is_studios:
+            types = types.filter(requires_studios=False)
+    elif not request.auth.is_superuser:
+        types = types.none()
     
     return 200, [
         {
@@ -4828,7 +5088,8 @@ def get_group_enabled_types(request):
             'nev': t.nev,
             'leiras': t.leiras,
             'supports_group_absence': t.supports_group_absence,
-            'requires_studios': t.requires_studios
+            'requires_studios': t.requires_studios,
+            'available_tagozat': t.available_tagozat,
         }
         for t in types
     ]
@@ -4869,6 +5130,8 @@ def get_eligible_classmates(request, igazolas_type_id: int = None, for_studios_o
         if igazolas_type_id:
             try:
                 igazolas_type = IgazolasTipus.objects.get(id=igazolas_type_id)
+                if not is_igazolas_tipus_allowed_for_class(igazolas_type, osztaly):
+                    return 400, {'error': 'Invalid type', 'detail': 'This type is not available to your class'}
                 if igazolas_type.requires_studios:
                     classmates = classmates.filter(profile__is_studios=True)
             except IgazolasTipus.DoesNotExist:
@@ -4907,10 +5170,11 @@ def get_eligible_classmates(request, igazolas_type_id: int = None, for_studios_o
 
 @api.post("/igazolasok/create-group", response={201: dict, 400: ErrorResponse, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Group Absences"])
 def create_group_igazolas(request, eleje: datetime, vege: datetime, tipus: int, 
-                         additional_student_ids: List[int] = Body(...),
-                         megjegyzes_diak: Optional[str] = None,
-                         imgDriveURL: Optional[str] = None,
-                         bkk_verification: Optional[dict] = None):
+                          additional_student_ids: List[int] = Body(...),
+                          megjegyzes_diak: Optional[str] = None,
+                          imgDriveURL: Optional[str] = None,
+                          bkk_verification: Optional[dict] = None,
+                          sub_form_data: Optional[dict] = Body(None)):
     """
     Create group igazolás for multiple students.
     
@@ -4957,6 +5221,9 @@ def create_group_igazolas(request, eleje: datetime, vege: datetime, tipus: int,
             'error': 'Invalid request',
             'detail': 'You must be in a class to create group igazolás'
         }
+
+    if not is_igazolas_tipus_allowed_for_class(igazolas_type, osztaly):
+        return 400, {'error': 'Invalid type', 'detail': 'This igazolás type is not available to your class'}
     
     # Verify all additional students are classmates
     classmate_ids = set(osztaly.tanulok.all().values_list('id', flat=True))
@@ -4966,6 +5233,13 @@ def create_group_igazolas(request, eleje: datetime, vege: datetime, tipus: int,
                 'error': 'Invalid students',
                 'detail': f'Student {student_id} is not your classmate'
             }
+        if igazolas_type.requires_studios:
+            student_profile = Profile.objects.filter(user_id=student_id).first()
+            if not student_profile or not student_profile.is_studios:
+                return 400, {
+                    'error': 'Permission denied',
+                    'detail': f'Student {student_id} does not have stúdiós status',
+                }
     
     # Generate group ID
     import uuid
@@ -5038,7 +5312,7 @@ def create_group_igazolas(request, eleje: datetime, vege: datetime, tipus: int,
     }
 
 
-@api.get("/igazolasok/{igazolas_id}/group-members", response={200: dict, 404: ErrorResponse}, auth=jwt_auth, tags=["Group Absences"])
+@api.get("/igazolasok/{igazolas_id}/group-members", response={200: dict, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Group Absences"])
 def get_group_members(request, igazolas_id: int):
     """
     Get all group members for a specific igazolás.
@@ -5047,6 +5321,22 @@ def get_group_members(request, igazolas_id: int):
     """
     try:
         igazolas = Igazolas.objects.get(id=igazolas_id)
+
+        if not request.auth.is_superuser:
+            is_group_member = bool(
+                igazolas.group_id
+                and Igazolas.objects.filter(
+                    group_id=igazolas.group_id,
+                    profile__user=request.auth,
+                ).exists()
+            )
+            is_assigned_teacher = Osztaly.objects.filter(
+                osztalyfonokok=request.auth,
+                tanulok=igazolas.profile.user,
+                archived=False,
+            ).exists()
+            if not is_group_member and not is_assigned_teacher:
+                return 404, {'error': 'Not found', 'detail': 'Igazolás not found'}
         
         if not igazolas.group_id:
             return 200, {
@@ -5095,7 +5385,7 @@ def get_group_members(request, igazolas_id: int):
 
 # Feature #27: Class Period Configuration
 
-@api.get("/classes/{class_id}/period-config", response={200: dict, 401: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Period Configuration"])
+@api.get("/classes/{class_id}/period-config", response={200: dict, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Period Configuration"])
 def get_class_period_config(request, class_id: int):
     """
     Get period configuration for a specific class.
@@ -5104,6 +5394,8 @@ def get_class_period_config(request, class_id: int):
     """
     try:
         osztaly = Osztaly.objects.get(id=class_id)
+        if not user_can_access_class(request.auth, osztaly):
+            return 403, {'error': 'Forbidden', 'detail': 'You cannot view this class period configuration'}
         
         # Default periods if not configured
         enabled = osztaly.enabled_periods if osztaly.enabled_periods else [1, 2, 3, 4, 5, 6, 7, 8, 9]
@@ -5140,7 +5432,7 @@ def update_class_period_config(request, class_id: int, enabled_periods: List[int
         }
     
     # Get teacher's class
-    teacher_class = get_teacher_class(request.auth)
+    teacher_class = get_teacher_class(request.auth, class_id)
     if not teacher_class or teacher_class.id != class_id:
         return 403, {
             'error': 'Forbidden',
@@ -5196,7 +5488,7 @@ def analyze_class_period_usage(request, class_id: int):
         }
     
     # Get teacher's class
-    teacher_class = get_teacher_class(request.auth)
+    teacher_class = get_teacher_class(request.auth, class_id)
     if not teacher_class or teacher_class.id != class_id:
         return 403, {
             'error': 'Forbidden',
@@ -5277,10 +5569,8 @@ def get_archivable_classes(request):
 @api.post("/admin/classes/{class_id}/archive", response={200: dict, 400: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Admin - Academic Year"])
 def archive_class(request, class_id: int, archive_teacher: bool = False):
     """
-    Close the current academic year:
-    1. Archive ALL unarchived igazolások and mulasztások system-wide (tanév lezárása).
-    2. Archive the selected outgoing class and its students' profiles.
-    3. Optionally archive the class teacher(s).
+    Archive one outgoing class and records belonging to its students.
+    3. Optionally archive teachers who have no other active class.
     Users remain active (can still log in).
     Requires superuser permission.
     """
@@ -5303,57 +5593,75 @@ def archive_class(request, class_id: int, archive_teacher: bool = False):
         academic_year = f"{now.year - 1}/{now.year}"
 
     archived_counts = {'students': 0, 'teachers': 0, 'igazolasok': 0, 'mulasztasok': 0}
-    student_user_ids: list = []
+    student_user_ids = list(osztaly.tanulok.values_list('id', flat=True))
 
     with transaction.atomic():
         # ----------------------------------------------------------------
-        # 1. Archive ALL unarchived igazolások and mulasztások system-wide
+        # 1. Archive this class's records only; closing one class must not
+        #    archive records from every other section in the school.
         # ----------------------------------------------------------------
         archived_counts['igazolasok'] = Igazolas.objects.filter(
-            archived=False
+            archived=False,
+            profile__user_id__in=student_user_ids,
         ).update(archived=True, academic_year=academic_year)
 
         archived_counts['mulasztasok'] = Mulasztas.objects.filter(
-            archived=False
+            archived=False,
+        ).filter(
+            Q(uploaded_by_student_id__in=student_user_ids)
+            | Q(matched_igazolas__profile__user_id__in=student_user_ids)
+            | Q(igazolas__profile__user_id__in=student_user_ids)
         ).update(archived=True, academic_year=academic_year)
 
         # ----------------------------------------------------------------
-        # 2. Archive the outgoing class and its students' profiles
+        # 2. Archive the outgoing class and profiles that are no longer
+        #    attached to any other active class.
         # ----------------------------------------------------------------
         osztaly.archived = True
         osztaly.archive_date = now
         osztaly.academic_year = academic_year
         osztaly.save()
 
-        student_user_ids = list(osztaly.tanulok.values_list('id', flat=True))
+        students_in_other_active_classes = Osztaly.objects.filter(
+            tanulok__id__in=student_user_ids,
+            archived=False,
+        ).exclude(id=osztaly.id).values_list('tanulok__id', flat=True).distinct()
 
         if student_user_ids:
             archived_counts['students'] = Profile.objects.filter(
                 user_id__in=student_user_ids,
-                archived=False
+                archived=False,
+            ).exclude(
+                user_id__in=students_in_other_active_classes,
             ).update(
                 archived=True,
                 archive_date=now,
-                academic_year=academic_year
+                academic_year=academic_year,
             )
 
         # ----------------------------------------------------------------
-        # 3. Optionally archive the class teacher(s)
+        # 3. Optionally archive only teachers who have no other active class.
         # ----------------------------------------------------------------
         if archive_teacher:
             teacher_user_ids = list(osztaly.osztalyfonokok.values_list('id', flat=True))
+            teachers_with_other_active_classes = Osztaly.objects.filter(
+                osztalyfonokok__id__in=teacher_user_ids,
+                archived=False,
+            ).exclude(id=osztaly.id).values_list('osztalyfonokok__id', flat=True).distinct()
             if teacher_user_ids:
                 archived_counts['teachers'] = Profile.objects.filter(
                     user_id__in=teacher_user_ids,
-                    archived=False
+                    archived=False,
+                ).exclude(
+                    user_id__in=teachers_with_other_active_classes,
                 ).update(
                     archived=True,
                     archive_date=now,
-                    academic_year=academic_year
+                    academic_year=academic_year,
                 )
 
     logger.info(
-        f"User {request.auth.username} closed academic year {academic_year}, "
+        f"User {request.auth.username} archived class for academic year {academic_year}, "
         f"outgoing class: {osztaly}, counts: {archived_counts}"
     )
     return 200, {
@@ -5735,7 +6043,7 @@ def create_class_with_students(request, tagozat: str = Body(...), kezdes_eve: in
 # Feature #26: Teacher-Created Igazolások
 
 @api.get("/teachers/students/eligible-for-igazolas", response={200: List[dict], 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Teacher - Create Igazolas"])
-def get_eligible_students_for_teacher(request):
+def get_eligible_students_for_teacher(request, class_id: Optional[int] = None):
     """
     Get list of students eligible for teacher-created igazolás.
     
@@ -5748,7 +6056,7 @@ def get_eligible_students_for_teacher(request):
             'detail': 'Only class teachers can create igazolások for students'
         }
     
-    teacher_class = get_teacher_class(request.auth)
+    teacher_class = get_teacher_class(request.auth, class_id)
     if not teacher_class:
         return 403, {
             'error': 'Forbidden',
@@ -5781,8 +6089,9 @@ def get_eligible_students_for_teacher(request):
 
 @api.post("/teachers/igazolasok/create-for-student", response={201: dict, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse}, auth=jwt_auth, tags=["Teacher - Create Igazolas"])
 def teacher_create_igazolas_for_student(request, student_id: int = Body(...), eleje: datetime = Body(...), 
-                                       vege: datetime = Body(...), tipus: int = Body(...),
-                                       megjegyzes_diak: Optional[str] = Body(None)):
+                                        vege: datetime = Body(...), tipus: int = Body(...),
+                                        megjegyzes_diak: Optional[str] = Body(None),
+                                        class_id: Optional[int] = None):
     """
     Teacher creates igazolás on behalf of a student.
     
@@ -5803,7 +6112,7 @@ def teacher_create_igazolas_for_student(request, student_id: int = Body(...), el
         }
     
     # Get teacher's class
-    teacher_class = get_teacher_class(request.auth)
+    teacher_class = get_teacher_class(request.auth, class_id)
     if not teacher_class:
         return 403, {
             'error': 'Forbidden',
@@ -5813,7 +6122,7 @@ def teacher_create_igazolas_for_student(request, student_id: int = Body(...), el
     # Verify student is in teacher's class
     try:
         student = User.objects.get(id=student_id)
-        if student not in teacher_class.tanulok.all():
+        if not teacher_class.tanulok.filter(id=student.id).exists():
             return 403, {
                 'error': 'Forbidden',
                 'detail': 'Student is not in your class'
@@ -5835,6 +6144,11 @@ def teacher_create_igazolas_for_student(request, student_id: int = Body(...), el
             'error': 'Not found',
             'detail': f'IgazolasTipus with id {tipus} does not exist'
         }
+
+    if not is_igazolas_tipus_allowed_for_class(igazolas_type, teacher_class):
+        return 400, {'error': 'Invalid type', 'detail': 'This igazolás type is not available to this class'}
+    if igazolas_type.requires_studios and not student_profile.is_studios:
+        return 400, {'error': 'Permission denied', 'detail': 'This type requires stúdiós status'}
     
     # Create igazolás (teacher-created)
     igazolas = Igazolas.objects.create(
@@ -5860,8 +6174,9 @@ def teacher_create_igazolas_for_student(request, student_id: int = Body(...), el
 
 @api.post("/teachers/igazolasok/create-bulk", response={201: dict, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse}, auth=jwt_auth, tags=["Teacher - Create Igazolas"])
 def teacher_bulk_create_igazolas(request, student_ids: List[int] = Body(...), eleje: datetime = Body(...),
-                                 vege: datetime = Body(...), tipus: int = Body(...),
-                                 megjegyzes_diak: Optional[str] = Body(None)):
+                                  vege: datetime = Body(...), tipus: int = Body(...),
+                                  megjegyzes_diak: Optional[str] = Body(None),
+                                  class_id: Optional[int] = None):
     """
     Teacher creates igazolások for multiple students (e.g., entire class at event).
     
@@ -5881,7 +6196,7 @@ def teacher_bulk_create_igazolas(request, student_ids: List[int] = Body(...), el
         }
     
     # Get teacher's class
-    teacher_class = get_teacher_class(request.auth)
+    teacher_class = get_teacher_class(request.auth, class_id)
     if not teacher_class:
         return 403, {
             'error': 'Forbidden',
@@ -5896,6 +6211,9 @@ def teacher_bulk_create_igazolas(request, student_ids: List[int] = Body(...), el
             'error': 'Not found',
             'detail': f'IgazolasTipus with id {tipus} does not exist'
         }
+
+    if not is_igazolas_tipus_allowed_for_class(igazolas_type, teacher_class):
+        return 400, {'error': 'Invalid type', 'detail': 'This igazolás type is not available to this class'}
     
     created_igazolasok = []
     failed = []
@@ -5910,6 +6228,9 @@ def teacher_bulk_create_igazolas(request, student_ids: List[int] = Body(...), el
             
             student = User.objects.get(id=student_id)
             student_profile, _ = Profile.objects.get_or_create(user=student)
+            if igazolas_type.requires_studios and not student_profile.is_studios:
+                failed.append({'id': student_id, 'reason': 'This type requires stúdiós status'})
+                continue
             
             igazolas = Igazolas.objects.create(
                 profile=student_profile,
@@ -6312,8 +6633,8 @@ def get_permission_matrix(request):
         blocked_types = set(osztaly.nem_fogadott_igazolas_tipusok.values_list('id', flat=True))
         
         for tipus in types:
-            # If type is in blocked list, permission is False
-            matrix[osztaly.id][tipus.id] = tipus.id not in blocked_types
+            tagozat_allowed = not tipus.available_tagozat or tipus.available_tagozat == osztaly.tagozat
+            matrix[osztaly.id][tipus.id] = tagozat_allowed and tipus.id not in blocked_types
     
     # Format response
     classes_data = []
@@ -6332,7 +6653,8 @@ def get_permission_matrix(request):
             'nev': tipus.nev,
             'leiras': tipus.leiras,
             'beleszamit': tipus.beleszamit,
-            'iskolaerdeku': tipus.iskolaerdeku
+            'iskolaerdeku': tipus.iskolaerdeku,
+            'available_tagozat': tipus.available_tagozat,
         })
     
     return 200, {
@@ -6364,6 +6686,12 @@ def update_permission(request, payload: dict = Body(...)):
         return 404, {'error': 'Not found', 'detail': 'Class not found'}
     except IgazolasTipus.DoesNotExist:
         return 404, {'error': 'Not found', 'detail': 'IgazolásTipus not found'}
+
+    if allowed and tipus.available_tagozat and tipus.available_tagozat != osztaly.tagozat:
+        return 400, {
+            'error': 'Invalid permission',
+            'detail': f'{tipus.nev} is restricted to {tipus.available_tagozat}-section classes',
+        }
     
     # Update permission
     if allowed:
@@ -6410,6 +6738,10 @@ def bulk_update_permissions(request, payload: dict = Body(...)):
             
             osztaly = Osztaly.objects.get(id=class_id)
             tipus = IgazolasTipus.objects.get(id=type_id)
+
+            if allowed and tipus.available_tagozat and tipus.available_tagozat != osztaly.tagozat:
+                failed_count += 1
+                continue
             
             if allowed:
                 osztaly.nem_fogadott_igazolas_tipusok.remove(tipus)

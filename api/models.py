@@ -49,14 +49,24 @@ class Profile(models.Model):
     academic_year = models.CharField(max_length=20, null=True, blank=True, verbose_name="Tanév", help_text="Pl. 2024/2025")
 
     def osztalyom(self):
-        return Osztaly.objects.filter(tanulok=self.user).first() or Osztaly.objects.filter(osztalyfonokok=self.user, archived=False).first()
+        return (
+            Osztaly.objects.filter(tanulok=self.user, archived=False)
+            .order_by('-kezdes_eve', 'tagozat')
+            .first()
+            or Osztaly.objects.filter(osztalyfonokok=self.user, archived=False)
+            .order_by('-kezdes_eve', 'tagozat')
+            .first()
+        )
 
     def osztalyaim(self):
         """
         Return all currently active (non-archived) classes where this user is
         an osztályfőnök. Supports osztályfőnök assigned to multiple classes.
         """
-        return Osztaly.objects.filter(osztalyfonokok=self.user, archived=False)
+        return Osztaly.objects.filter(
+            osztalyfonokok=self.user,
+            archived=False,
+        ).order_by('-kezdes_eve', 'tagozat')
 
     def osztalyom_igazolasai(self):
         """
@@ -211,6 +221,13 @@ class IgazolasTipus(models.Model):
                                                  help_text="Lehetővé teszi több diák párhuzamos igazolását ugyanarra az eseményre")
     requires_studios = models.BooleanField(default=False, verbose_name="Stúdiós szükséges", 
                                           help_text="Csak stúdiós diákok használhatják ezt az igazolás típust")
+    available_tagozat = models.CharField(
+        max_length=1,
+        null=True,
+        blank=True,
+        verbose_name="Elérhető tagozat",
+        help_text="Ha meg van adva, az igazolástípust csak ez a tagozat használhatja (pl. F).",
+    )
     
     # Categorization and sub-forms
     category = models.CharField(

@@ -51,6 +51,7 @@ class ProfileSchema(Schema):
     user: UserSchema
     osztalyom: Optional[OsztalySimpleSchema] = None
     osztalyaim: Optional[List[OsztalySimpleSchema]] = None
+    is_studios: bool = False
     
     class Config:
         from_attributes = True
@@ -102,6 +103,7 @@ class IgazolasTipusSchema(Schema):
     display_order: int
     supports_group_absence: bool
     requires_studios: bool
+    available_tagozat: Optional[str] = None
     
     class Config:
         from_attributes = True
@@ -280,7 +282,7 @@ class ChangePasswordOTPResponse(Schema):
 class ToggleIgazolasTipusRequest(Schema):
     tipus_id: int
     enabled: bool  # True to enable (allow), False to disable (not accept)
-    osztaly_id: Optional[int] = None  # Optional: apply to a single class. If omitted, applies to ALL active classes where the requester is osztályfőnök.
+    osztaly_id: Optional[int] = None  # Optional class selector; if omitted, defaults to the teacher's first active class.
 
 
 class ToggleIgazolasTipusResponse(Schema):
@@ -289,6 +291,22 @@ class ToggleIgazolasTipusResponse(Schema):
     tipus_id: int
     enabled: bool
     osztaly_ids: Optional[List[int]] = None  # IDs of classes that were updated
+
+
+class FrontendIgazolasTipusImportRequest(Schema):
+    """Backend attributes needed to import a frontend-supported type."""
+    nev: str
+    leiras: Optional[str] = None
+    beleszamit: bool = True
+    iskolaerdeku: bool = False
+    category: str = 'egyeb'
+    category_emoji: Optional[str] = None
+    has_sub_form: bool = False
+    sub_form_schema: Optional[dict] = None
+    display_order: int = 0
+    supports_group_absence: bool = False
+    requires_studios: bool = False
+    available_tagozat: Optional[str] = None
 
 
 # Change Note schemas

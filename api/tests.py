@@ -7,9 +7,10 @@ from urllib.parse import parse_qs, urlparse
 from django.contrib import admin
 from django.contrib.auth.models import User
 from django.test import RequestFactory, TestCase, override_settings
+from django.urls import reverse
 from django.utils import timezone
 
-from .admin import IgazolasAdmin
+from .admin import IgazolasAdmin, IgazolasTipusAdmin
 from .models import (
     Igazolas,
     IgazolasTipus,
@@ -86,6 +87,192 @@ class IgazolasAdminPrivacyTests(TestCase):
         self.assertTrue(sensitive_fields.isdisjoint(self.get_field_names(self.unrelated_admin)))
         self.assertNotIn('get_megjegyzes_diak', self.model_admin.get_list_display(request))
         self.assertNotIn('megjegyzes_diak', self.model_admin.get_search_fields(request))
+
+
+class IgazolasTipusAdminDeletionTests(TestCase):
+    def setUp(self):
+        self.admin_user = User.objects.create_superuser(
+            username='type-admin',
+            email='type-admin@example.test',
+            password='password',
+        )
+        self.student = User.objects.create_user(username='type-student')
+        self.profile = Profile.objects.create(user=self.student)
+        self.replacement_type, _ = IgazolasTipus.objects.get_or_create(nev='Egyéb')
+        self.type_to_delete = IgazolasTipus.objects.create(nev='Régi típus')
+        now = timezone.now()
+        self.igazolas = Igazolas.objects.create(
+            profile=self.profile,
+            eleje=now,
+            vege=now + timedelta(hours=1),
+            tipus=self.type_to_delete,
+        )
+
+    def test_delete_confirmation_defaults_reassignment_to_egyeb(self):
+        self.client.force_login(self.admin_user)
+        response = self.client.get(
+            reverse('admin:api_igazolastipus_delete', args=[self.type_to_delete.pk])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Kapcsolt igazolások új típusa')
+        self.assertContains(
+            response,
+            f'<option value="{self.replacement_type.pk}" selected>',
+            html=False,
+        )
+
+    def test_delete_reassigns_linked_igazolas_before_removing_type(self):
+        self.client.force_login(self.admin_user)
+        response = self.client.post(
+            reverse('admin:api_igazolastipus_delete', args=[self.type_to_delete.pk]),
+            {'post': 'yes', 'replacement_type': str(self.replacement_type.pk)},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.igazolas.refresh_from_db()
+        self.assertEqual(self.igazolas.tipus_id, self.replacement_type.pk)
+        self.assertFalse(IgazolasTipus.objects.filter(pk=self.type_to_delete.pk).exists())
+
+    def test_delete_defaults_to_egyeb_if_replacement_post_is_missing(self):
+        self.client.force_login(self.admin_user)
+        response = self.client.post(
+            reverse('admin:api_igazolastipus_delete', args=[self.type_to_delete.pk]),
+            {'post': 'yes'},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.igazolas.refresh_from_db()
+        self.assertEqual(self.igazolas.tipus_id, self.replacement_type.pk)
+
+
+class SchoolWideSectionPolicyTests(TestCase):
+    def setUp(self):
+        self.admin_user = User.objects.create_superuser(
+            username='section-admin',
+            email='section-admin@example.test',
+            password='password',
+        )
+        self.f_class = Osztaly.objects.create(tagozat='F', kezdes_eve=2025)
+        self.a_class = Osztaly.objects.create(tagozat='A', kezdes_eve=2025)
+        self.media_type = IgazolasTipus.objects.create(
+            nev='Médiás Távollét',
+            available_tagozat='F',
+        )
+
+    def test_permission_matrix_locks_section_type_to_its_tagozat(self):
+        from types import SimpleNamespace
+        from .views import get_permission_matrix, is_igazolas_tipus_allowed_for_class, update_permission
+
+        self.assertTrue(is_igazolas_tipus_allowed_for_class(self.media_type, self.f_class))
+        self.assertFalse(is_igazolas_tipus_allowed_for_class(self.media_type, self.a_class))
+
+        request = SimpleNamespace(auth=self.admin_user)
+        status, result = get_permission_matrix(request)
+        self.assertEqual(status, 200)
+        matrix = result['matrix']
+
+        self.assertTrue(matrix[self.f_class.id][self.media_type.id])
+        self.assertFalse(matrix[self.a_class.id][self.media_type.id])
+
+        status, response = update_permission(request, {
+            'class_id': self.a_class.id,
+            'type_id': self.media_type.id,
+            'allowed': True,
+        })
+        self.assertEqual(status, 400)
+        self.assertEqual(response['error'], 'Invalid permission')
+
+    def test_full_ftv_sync_only_processes_f_classes(self):
+        from unittest.mock import patch
+        from .ftv_sync import sync_full_from_ftv
+
+        with patch('api.ftv_sync.sync_base_from_ftv', return_value={'statistics': {}}), \
+             patch('api.ftv_sync.sync_class_absences_from_ftv', return_value={'statistics': {}}) as sync_class, \
+             patch('api.ftv_sync.update_cache_metadata'):
+            sync_full_from_ftv()
+
+        self.assertEqual(
+            [call.args[0].id for call in sync_class.call_args_list],
+            [self.f_class.id],
+        )
+
+    def test_direct_class_ftv_sync_skips_non_f_classes(self):
+        from .ftv_sync import sync_class_absences_from_ftv
+
+        result = sync_class_absences_from_ftv(self.a_class)
+
+        self.assertTrue(result['skipped'])
+        self.assertEqual(result['statistics']['errors'], 0)
+
+    def test_frontend_type_import_is_superuser_only_and_idempotent(self):
+        from types import SimpleNamespace
+
+        from .schemas import FrontendIgazolasTipusImportRequest
+        from .views import import_frontend_igazolas_type
+
+        data = FrontendIgazolasTipusImportRequest(
+            nev='Nyelvvizsga',
+            leiras='A tanuló előre egyeztetett nyelvvizsgán vett részt',
+            beleszamit=False,
+            iskolaerdeku=True,
+            category='tanulmanyi',
+            available_tagozat=None,
+        )
+        status, result = import_frontend_igazolas_type(
+            SimpleNamespace(auth=self.admin_user),
+            data,
+        )
+        self.assertEqual(status, 201)
+        imported_type = IgazolasTipus.objects.get(pk=result['id'])
+        self.assertEqual(imported_type.category, 'tanulmanyi')
+
+        status, result = import_frontend_igazolas_type(
+            SimpleNamespace(auth=self.admin_user),
+            data,
+        )
+        self.assertEqual(status, 200)
+        self.assertFalse(result['created'])
+        self.assertEqual(IgazolasTipus.objects.filter(nev__iexact='Nyelvvizsga').count(), 1)
+
+        status, _ = import_frontend_igazolas_type(
+            SimpleNamespace(auth=User.objects.create_user(username='not-admin')),
+            FrontendIgazolasTipusImportRequest(nev='Nem engedélyezett típus'),
+        )
+        self.assertEqual(status, 403)
+
+    def test_class_archival_does_not_archive_other_sections_records(self):
+        from types import SimpleNamespace
+        from .views import archive_class
+
+        class_student = User.objects.create_user(username='archive-a-student')
+        other_student = User.objects.create_user(username='archive-f-student')
+        class_profile = Profile.objects.create(user=class_student)
+        other_profile = Profile.objects.create(user=other_student)
+        self.a_class.tanulok.add(class_student)
+        self.f_class.tanulok.add(other_student)
+        reason_type = IgazolasTipus.objects.create(nev='Orvosi igazolás')
+        now = timezone.now()
+        class_record = Igazolas.objects.create(
+            profile=class_profile,
+            eleje=now,
+            vege=now + timedelta(hours=1),
+            tipus=reason_type,
+        )
+        other_record = Igazolas.objects.create(
+            profile=other_profile,
+            eleje=now,
+            vege=now + timedelta(hours=1),
+            tipus=reason_type,
+        )
+
+        status, _ = archive_class(SimpleNamespace(auth=self.admin_user), self.a_class.id)
+
+        self.assertEqual(status, 200)
+        class_record.refresh_from_db()
+        other_record.refresh_from_db()
+        self.assertTrue(class_record.archived)
+        self.assertFalse(other_record.archived)
 
 
 @override_settings(
@@ -260,6 +447,7 @@ class SSOLoginTests(TestCase):
         self.assertEqual(headers, {})
 
 
+@override_settings(USE_TZ=True)
 class BKKDisruptionHistoryTests(TestCase):
     def setUp(self):
         self.current_user = User.objects.create_user(username='current-student')

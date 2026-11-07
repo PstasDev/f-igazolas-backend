@@ -8,6 +8,8 @@ from django.shortcuts import redirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.contrib import messages
+from django.db import transaction
+from django.core.exceptions import PermissionDenied
 from .models import (
     Profile, Osztaly, Mulasztas, IgazolasTipus, Igazolas, 
     SystemMessage, TanitasiSzunet, Override, APIMetrics,
@@ -446,8 +448,9 @@ class MulasztasAdmin(admin.ModelAdmin):
 # IgazolasTipus Admin
 @admin.register(IgazolasTipus)
 class IgazolasTipusAdmin(admin.ModelAdmin):
-    list_display = ['id', 'nev', 'beleszamit', 'iskolaerdeku', 'supports_group_absence', 'requires_studios']
-    list_filter = ['beleszamit', 'iskolaerdeku', 'supports_group_absence', 'requires_studios']
+    delete_confirmation_template = 'admin/api/igazolastipus/delete_confirmation.html'
+    list_display = ['id', 'nev', 'category', 'available_tagozat', 'beleszamit', 'iskolaerdeku', 'supports_group_absence', 'requires_studios']
+    list_filter = ['category', 'available_tagozat', 'beleszamit', 'iskolaerdeku', 'supports_group_absence', 'requires_studios']
     search_fields = ['nev', 'leiras']
     
     fieldsets = (
@@ -458,10 +461,65 @@ class IgazolasTipusAdmin(admin.ModelAdmin):
             'fields': ('beleszamit', 'iskolaerdeku')
         }),
         ('Csoportos & Speciális', {
-            'fields': ('supports_group_absence', 'requires_studios'),
-            'description': 'Csoportos hiányzás támogatás és stúdiós követelmények'
+            'fields': ('supports_group_absence', 'requires_studios', 'available_tagozat'),
+            'description': 'Csoportos hiányzás, stúdiós követelmény és tagozatszintű korlátozás'
+        }),
+        ('Megjelenítés', {
+            'fields': ('category', 'category_emoji', 'display_order', 'has_sub_form', 'sub_form_schema'),
+            'classes': ('collapse',)
         }),
     )
+
+    def get_actions(self, request):
+        # Deleting types in bulk would bypass the per-type replacement prompt.
+        actions = super().get_actions(request)
+        actions.pop('delete_selected', None)
+        return actions
+
+    def get_deleted_objects(self, objs, request):
+        """Don't present linked Igazolas rows as deletions; they are reassigned."""
+        objs = list(objs)
+        return (
+            [str(obj) for obj in objs],
+            {str(self.opts.verbose_name): len(objs)},
+            set(),
+            [],
+        )
+
+    @staticmethod
+    def _replacement_types(deleting_type):
+        return IgazolasTipus.objects.exclude(pk=deleting_type.pk).order_by('nev', 'pk')
+
+    def _default_replacement_type(self, deleting_type):
+        replacements = self._replacement_types(deleting_type)
+        return replacements.filter(nev__iexact='Egyéb').first() or replacements.first()
+
+    def render_delete_form(self, request, context):
+        deleting_type = context['object']
+        linked_count = Igazolas.objects.filter(tipus=deleting_type).count()
+        initial_type = self._default_replacement_type(deleting_type)
+        context['linked_igazolas_count'] = linked_count
+        context['replacement_types'] = self._replacement_types(deleting_type)
+        context['default_replacement_type_id'] = initial_type.pk if initial_type else None
+        return super().render_delete_form(request, context)
+
+    def delete_model(self, request, obj):
+        linked_igazolas = Igazolas.objects.filter(tipus=obj)
+        linked_count = linked_igazolas.count()
+        replacement_id = request.POST.get('replacement_type')
+        replacement = None
+
+        if replacement_id:
+            replacement = self._replacement_types(obj).filter(pk=replacement_id).first()
+        if linked_count and replacement is None:
+            replacement = self._default_replacement_type(obj)
+        if linked_count and replacement is None:
+            raise PermissionDenied('Create another igazolás type before deleting this one.')
+
+        with transaction.atomic():
+            if linked_count:
+                linked_igazolas.update(tipus=replacement)
+            super().delete_model(request, obj)
 
 
 # Igazolas Admin

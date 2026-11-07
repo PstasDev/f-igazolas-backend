@@ -376,9 +376,13 @@ def get_or_create_ftv_igazolas_tipus() -> IgazolasTipus:
         defaults={
             'leiras': 'Média tagozat FTV forgatáson való részvétel (automatikusan szinkronizálva)',
             'beleszamit': False,
-            'iskolaerdeku': True
+            'iskolaerdeku': True,
+            'available_tagozat': 'F',
         }
     )
+    if tipus.available_tagozat != 'F':
+        tipus.available_tagozat = 'F'
+        tipus.save(update_fields=['available_tagozat'])
     if created:
         logger.info("Created 'Médiás Távollét' igazolás tipus")
     return tipus
@@ -596,11 +600,19 @@ def sync_user_absences_from_ftv(user: User, debug_performance: bool = False) -> 
     synced_ftv_ids = []
     
     try:
-        # Get FTV igazolás tipus
-        print(f"📋 Getting or creating FTV igazolás tipus...")
-        ftv_tipus = get_or_create_ftv_igazolas_tipus()
-        print(f"   ✓ FTV tipus: {ftv_tipus.nev} (ID: {ftv_tipus.id})\n")
-        
+        user_profile = Profile.objects.filter(user=user).first()
+        user_class = user_profile.osztalyom() if user_profile else None
+        has_f_class = bool(
+            (user_class and user_class.tagozat == 'F')
+            or (user_profile and user_profile.osztalyaim().filter(tagozat='F').exists())
+        )
+        if user_class and user_class.tagozat != 'F' and not has_f_class:
+            return {
+                'statistics': stats,
+                'ftv_registered': False,
+                'message': 'FTV sync is only available for F-section classes',
+            }
+
         # Get user's profile
         print(f"👤 Checking user profile...")
         try:
@@ -638,6 +650,15 @@ def sync_user_absences_from_ftv(user: User, debug_performance: bool = False) -> 
                 print(f"✓ SYNC COMPLETED (user not in FTV)")
                 print(f"{'='*80}\n")
                 return result
+
+            ftv_class_data = ftv_profile.get('osztaly') or {}
+            ftv_section = str(ftv_class_data.get('szekcio', '')).upper()
+            if ftv_section and ftv_section != 'F':
+                return {
+                    'statistics': stats,
+                    'ftv_registered': False,
+                    'message': 'FTV sync is only available for F-section classes',
+                }
             
             ftv_user_id = ftv_profile['user_id']
             print(f"   ✓ Found FTV user ID: {ftv_user_id}\n")
@@ -664,6 +685,11 @@ def sync_user_absences_from_ftv(user: User, debug_performance: bool = False) -> 
             print(f"   ✗ ERROR fetching FTV profile: {str(e)}\n")
             logger.error(f"Failed to fetch FTV profile for {user.email}: {str(e)}")
             raise FTVSyncError(f"Failed to fetch FTV profile: {str(e)}")
+
+        # The FTV-only type is created only after the user passes the F-section check.
+        print(f"📋 Getting or creating FTV igazolás tipus...")
+        ftv_tipus = get_or_create_ftv_igazolas_tipus()
+        print(f"   ✓ FTV tipus: {ftv_tipus.nev} (ID: {ftv_tipus.id})\n")
         
         # Fetch absences for this user
         print(f"📥 Fetching absences from FTV API...")
@@ -695,6 +721,9 @@ def sync_user_absences_from_ftv(user: User, debug_performance: bool = False) -> 
                     if 'osztaly' in ftv_absence and ftv_absence['osztaly']:
                         # FTV sends class info in absence - sync it
                         ftv_osztaly_data = ftv_absence['osztaly']
+                        if str(ftv_osztaly_data.get('szekcio', '')).upper() != 'F':
+                            logger.info("Skipping non-F FTV absence %s for %s", absence_id, user.username)
+                            continue
                         print(f"      → Class data: {ftv_osztaly_data.get('startYear')}/{ftv_osztaly_data.get('szekcio')}")
                         osztaly = sync_or_create_osztaly(ftv_osztaly_data)
                         print(f"      → Osztaly: {osztaly}")
@@ -705,8 +734,8 @@ def sync_user_absences_from_ftv(user: User, debug_performance: bool = False) -> 
                     else:
                         # Fallback: use user's current class
                         osztaly = profile.osztalyom()
-                        if not osztaly:
-                            print(f"      ✗ ERROR: User has no class and absence has no class data - SKIPPING")
+                        if not osztaly or osztaly.tagozat != 'F':
+                            print(f"      ✗ ERROR: User has no F class and absence has no class data - SKIPPING")
                             logger.warning(f"User {user.username} has no class and FTV absence {ftv_absence.get('id')} has no class data - skipping")
                             stats['errors'] += 1
                             continue
@@ -805,12 +834,6 @@ def sync_class_absences_from_ftv(osztaly: Osztaly, debug_performance: bool = Fal
     Returns:
         Dict with sync statistics and optional performance data
     """
-    print(f"\n{'='*80}")
-    print(f"🔄 STARTING CLASS FTV SYNC")
-    print(f"   Class: {osztaly} (ID: {osztaly.id})")
-    print(f"   Debug Performance: {debug_performance}")
-    print(f"{'='*80}\n")
-    
     stats = {
         'users_synced': 0,
         'igazolasok_created': 0,
@@ -818,6 +841,20 @@ def sync_class_absences_from_ftv(osztaly: Osztaly, debug_performance: bool = Fal
         'igazolasok_deleted': 0,
         'errors': 0
     }
+
+    if osztaly.tagozat != 'F':
+        logger.info("Skipping FTV sync for non-F class %s", osztaly)
+        return {
+            'statistics': stats,
+            'skipped': True,
+            'reason': 'FTV sync is only available for F-section classes',
+        }
+
+    print(f"\n{'='*80}")
+    print(f"🔄 STARTING CLASS FTV SYNC")
+    print(f"   Class: {osztaly} (ID: {osztaly.id})")
+    print(f"   Debug Performance: {debug_performance}")
+    print(f"{'='*80}\n")
     
     ftv_performance = None
     synced_ftv_ids = []
@@ -1010,6 +1047,9 @@ def sync_base_from_ftv(debug_performance: bool = False) -> Dict:
         
         # Sync classes
         for ftv_osztaly in ftv_osztalyok:
+            if str(ftv_osztaly.get('szekcio', '')).upper() != 'F':
+                logger.info("Skipping non-F class from FTV base sync: %s", ftv_osztaly.get('szekcio'))
+                continue
             try:
                 osztaly = sync_or_create_osztaly(ftv_osztaly)
                 stats['classes_synced'] += 1
@@ -1044,11 +1084,11 @@ def sync_base_from_ftv(debug_performance: bool = False) -> Dict:
 
 def sync_full_from_ftv(debug_performance: bool = False) -> Dict:
     """
-    Full sync - syncs base data (classes + students) AND absences for every class.
+    Full sync - syncs FTV base data and absences for every active F-section class.
 
     Unlike sync_base_from_ftv (classes/students only), this also calls
-    sync_class_absences_from_ftv for every Osztaly, so it produces a complete,
-    up-to-date set of igazolások across the whole school - used by the
+    sync_class_absences_from_ftv for every active F-section Osztaly, so it produces a complete,
+    up-to-date set of FTV igazolások for that section - used by the
     admin "FTV Sync" button under Osztályok.
 
     Args:
@@ -1070,7 +1110,7 @@ def sync_full_from_ftv(debug_performance: bool = False) -> Dict:
     ftv_performance = None
 
     try:
-        logger.info("Starting full FTV sync (base + all class absences)...")
+        logger.info("Starting full FTV sync (base + active F-class absences)...")
 
         # Step 1: base sync (classes + students)
         base_result = sync_base_from_ftv(debug_performance=debug_performance)
@@ -1081,8 +1121,8 @@ def sync_full_from_ftv(debug_performance: bool = False) -> Dict:
         if debug_performance and base_result.get('ftv_performance'):
             ftv_performance = {'base': base_result['ftv_performance']}
 
-        # Step 2: sync absences for every class
-        osztalyok = list(Osztaly.objects.all())
+        # Step 2: sync absences only for active F-section classes.
+        osztalyok = list(Osztaly.objects.filter(tagozat='F', archived=False))
         class_performance = []
         for osztaly in osztalyok:
             try:
